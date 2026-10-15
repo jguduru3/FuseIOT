@@ -1,36 +1,121 @@
-# examples/config.yaml
-# Example FuseIoT configuration
+# FuseIoT configuration template for real devices.
+#
+#   fuseiot -c examples/config.yaml validate
+#   FUSEIOT_API_TOKEN=change-me fuseiot -c examples/config.yaml serve --host 0.0.0.0
+#
+# Any string may reference environment variables: ${NAME} or ${NAME:-default}.
+# Every key can also be overridden with FUSEIOT_<KEY>, e.g. FUSEIOT_LOG_LEVEL=DEBUG.
 
-default_ttl: 5.0
+# --- hub -------------------------------------------------------------------
+default_ttl: 5.0              # seconds a read state is served from cache
 max_devices: 100
 
-# Confirmation settings
-confirm_default: true
-confirm_timeout: 2.0
+# --- commands ----------------------------------------------------------------
+confirm_default: true         # verify state after every command
+confirm_timeout: 2.0          # seconds allowed for send + confirmation
+confirm_poll_interval: 0.1
+default_retry_attempts: 3     # transport-level send attempts
 
-# Resilience
+# --- resilience ----------------------------------------------------------------
 circuit_breaker_enabled: true
 circuit_failure_threshold: 5
 circuit_recovery_timeout: 30.0
-
 rate_limit_enabled: true
 rate_limit_requests: 100
 rate_limit_window: 60.0
 
-# Persistence
+# --- persistence ---------------------------------------------------------------
 persistence_enabled: true
-persistence_backend: sqlite
-persistence_path: fuseiot.db
+persistence_backend: sqlite   # sqlite | redis | memory
+persistence_path: ./data/fuseiot.db
+# redis_url: redis://localhost:6379/0
+history_enabled: true
+history_path: ./data/history.db
 
-# Logging
+# --- logging ---------------------------------------------------------------------
 log_level: INFO
-log_json: false
+log_json: false               # true in production (one JSON object per line)
 
-# Security
-tls_verify: true
+# --- server (fuseiot serve) --------------------------------------------------------
+server_host: 127.0.0.1
+server_port: 8080
+api_token: ${FUSEIOT_API_TOKEN:-}
+rules_interval: 5.0
 
-# Environment
+# --- home automation --------------------------------------------------------------
+users_db: ./data/users.db     # enables sign-in + roles: fuseiot user add admin --role admin
+monitor_interval: 30          # poll devices (offline detection, wall-switch changes); 0 = off
+offline_after: 2
+location: {latitude: 12.97, longitude: 77.59, timezone: Asia/Kolkata}
+notifications:
+  channels:
+    phone: {type: ntfy, topic: "${NTFY_TOPIC:-change-me-to-a-long-random-topic}"}
+  alerts:
+    device_offline: [phone]
+    command_failed: [phone]
+schedules:
+  - {name: living_light_at_sunset, at: sunset-15m, then: {device: living_room_light, command: "on"}}
+  - {name: living_light_off, at: "23:30", days: daily, then: {device: living_room_light, command: "off"}}
+
+# --- cloud (optional) ----------------------------------------------------------------
+cloud_enabled: false
+# cloud_provider: aws         # aws | azure | mqtt
+# cloud_options:
+#   endpoint: abc123-ats.iot.eu-west-1.amazonaws.com
+#   client_id: fuseiot-hub-1
+#   cert_path: /certs/device.pem.crt
+#   key_path: /certs/private.pem.key
+#   ca_path: /certs/AmazonRootCA1.pem
+
 environment: production
 tags:
-  location: home
-  floor: ground
+  site: home
+
+# --- devices ------------------------------------------------------------------------
+devices:
+  - id: living_room_light
+    name: Living room light
+    capability: switchable
+    protocol: http
+    endpoint: http://192.168.1.45/api
+    options: {timeout: 2.0}            # protocol options (auth, bearer_token, headers, ...)
+    command: {timeout: 3.0}            # per-device command overrides
+
+  - id: garage_door
+    capability: switchable
+    protocol: https
+    endpoint: https://garage.local/api
+    options:
+      bearer_token: ${GARAGE_TOKEN}
+      ca_bundle: /certs/local-ca.pem
+
+  - id: hallway_temp
+    capability: sensor
+    protocol: mqtt
+    endpoint: mqtt://broker.local:1883/home/hallway/temp   # base topic home/hallway/temp
+    options: {username: fuseiot, password: "${MQTT_PASSWORD}"}
+    capability_options: {unit: celsius}
+
+  - id: blinds
+    capability: motor
+    protocol: serial
+    endpoint: /dev/ttyUSB0
+    options: {baudrate: 115200}
+    capability_options: {position_range: [0, 100]}
+
+  - id: aquarium_light
+    capability: rgb_light
+    protocol: websocket
+    endpoint: ws://192.168.1.60:81/ws
+
+# --- automation -----------------------------------------------------------------------
+rules:
+  - name: hallway_light_when_cold
+    when:
+      - {device: hallway_temp, property: value, op: "<", value: 16}
+    then:
+      - {device: living_room_light, command: "on"}
+    else:
+      - {device: living_room_light, command: "off"}
+    mode: edge         # act only when the outcome changes
+    cooldown: 300

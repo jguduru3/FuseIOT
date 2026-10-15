@@ -1,24 +1,15 @@
-﻿# fuseiot/protocols/__init__.py
+# fuseiot/protocols/__init__.py
 """Protocol implementations for FuseIoT."""
 
-from fuseiot.protocols.base import Protocol, ProtocolConfig, AsyncProtocol, ConnectionState
+from fuseiot.protocols.base import AsyncProtocol, ConnectionState, Protocol, ProtocolConfig
 from fuseiot.protocols.http import HTTP, HTTPConfig
 from fuseiot.protocols.https import HTTPS, HTTPSConfig
 from fuseiot.protocols.mqtt import MQTT, MQTTConfig
 from fuseiot.protocols.mqtts import MQTTS, MQTTSConfig
 
-# Try to import optional protocols
-try:
-    from fuseiot.protocols.web_socket import WebSocket, WebSocketConfig
-except ImportError:
-    WebSocket = None
-    WebSocketConfig = None
-
-try:
-    from fuseiot.protocols.serial import Serial, SerialConfig
-except ImportError:
-    Serial = None
-    SerialConfig = None
+# Optional dependencies are checked when a protocol is instantiated.
+from fuseiot.protocols.serial import Serial, SerialConfig
+from fuseiot.protocols.web_socket import WebSocket, WebSocketConfig
 
 __all__ = [
     "Protocol",

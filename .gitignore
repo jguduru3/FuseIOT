@@ -29,3 +29,12 @@ build/
 
 # Environment variables
 .env
+# Runtime data
+data/
+*.db-wal
+*.db-shm
+
+# Coverage
+.coverage
+coverage.xml
+htmlcov/

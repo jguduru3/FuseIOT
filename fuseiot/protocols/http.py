@@ -1,19 +1,36 @@
-import asyncio
-from typing import Dict, Any, Optional, Tuple
-from dataclasses import dataclass
+"""
+HTTP/REST transport.
 
-try:
+Payload convention used by all capabilities::
+
+    {"_method": "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
+     "_path": "/state",
+     ...body fields...}
+
+Keys starting with ``_`` are routing metadata; everything else is sent as the
+JSON body (or query string for GET/DELETE).
+"""
+import asyncio
+import threading
+import time
+from dataclasses import dataclass
+from typing import Any, Dict, Optional, Tuple, Union
+
+from ..exceptions import AuthenticationError, ProtocolError
+from ..logging_config import get_logger
+from .base import AsyncProtocol, ConnectionState, ProtocolConfig
+
+try:  # optional
     import aiohttp
+
     AIOHTTP_AVAILABLE = True
-except ImportError:
+except ImportError:  # pragma: no cover - depends on environment
+    aiohttp = None  # type: ignore[assignment]
     AIOHTTP_AVAILABLE = False
 
-from .base import AsyncProtocol, ProtocolConfig, ConnectionState
-from ..exceptions import ProtocolError, AuthenticationError
-from ..logging_config import get_logger
-from ..utils.retry import async_retry, AsyncRetryConfig
-
 logger = get_logger("protocols.http")
+
+_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE")
 
 
 @dataclass
@@ -30,214 +47,274 @@ class HTTPConfig(ProtocolConfig):
 
 class HTTP(AsyncProtocol):
     """
-    Native async HTTP/REST protocol.
-    
-    Uses aiohttp for high-performance async operations.
-    Falls back to requests for sync operations.
+    HTTP/REST device transport (sync via ``requests``, async via ``aiohttp``).
+
+    Args:
+        base_url: Device API root, e.g. ``http://192.168.1.45/api``.
+        auth: ``(username, password)`` for HTTP Basic auth.
+        bearer_token: Sent as ``Authorization: Bearer <token>``.
+        headers: Extra headers.
+        timeout: Per-request timeout in seconds.
+        verify_ssl: Verify TLS certificates (or path to a CA bundle).
+        client_cert: ``(cert_file, key_file)`` for mutual TLS.
+        health_path: Path probed by :meth:`connect` (default: ``base_url``).
     """
-    
+
     def __init__(
         self,
         base_url: str,
         auth: Optional[Tuple[str, str]] = None,
         bearer_token: Optional[str] = None,
         headers: Optional[Dict[str, str]] = None,
-        timeout: float = 5.0,
-        verify_ssl: bool = True,
+        timeout: Optional[float] = None,
+        verify_ssl: Union[bool, str] = True,
         client_cert: Optional[Tuple[str, str]] = None,
-        config: Optional[HTTPConfig] = None
+        health_path: str = "",
+        config: Optional[HTTPConfig] = None,
     ):
         super().__init__(config or HTTPConfig())
+        if not base_url.startswith(("http://", "https://")):
+            base_url = "http://" + base_url
         self.base_url = base_url.rstrip("/")
         self.auth = auth
         self.bearer_token = bearer_token
-        self.headers = headers or {}
+        self.headers = dict(headers or {})
         self.verify_ssl = verify_ssl
         self.client_cert = client_cert
-        
-        self._session: Optional[aiohttp.ClientSession] = None
-        self._sync_session = None
-    
+        self.health_path = health_path
+        if timeout is not None:
+            self.config.timeout = float(timeout)
+
+        self._sync_session: Any = None
+        self._session_lock = threading.Lock()
+        self._async_session: Any = None
+        self._async_loop: Optional[asyncio.AbstractEventLoop] = None
+
+    # ----------------------------------------------------------------- basics
+
+    @property
+    def timeout(self) -> float:
+        return self.config.timeout
+
     @property
     def endpoint(self) -> str:
-        return f"http:{self.base_url}"
-    
+        return self.base_url
+
     def _get_headers(self) -> Dict[str, str]:
-        """Build request headers."""
-        h = {
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            **self.headers
-        }
+        h = {"Content-Type": "application/json", "Accept": "application/json", **self.headers}
         if self.bearer_token:
             h["Authorization"] = f"Bearer {self.bearer_token}"
         return h
-    
-    async def connect_async(self) -> bool:
-        """Async connection with aiohttp."""
-        if not AIOHTTP_AVAILABLE:
-            # Fallback to sync
-            return self.connect()
-        
+
+    @staticmethod
+    def _split(payload: Dict[str, Any]) -> Tuple[str, str, Dict[str, Any]]:
+        method = str(payload.get("_method", "POST")).upper()
+        if method not in _METHODS:
+            raise ValueError(f"Unsupported HTTP method: {method}")
+        path = str(payload.get("_path", "/"))
+        if not path.startswith("/"):
+            path = "/" + path
+        body = {k: v for k, v in payload.items() if not str(k).startswith("_")}
+        return method, path, body
+
+    # ------------------------------------------------------------------- sync
+
+    def _session(self) -> Any:
         try:
-            connector = aiohttp.TCPConnector(
-                limit=self.config.connection_pool_size,
-                ttl_dns_cache=300,
-                use_dns_cache=True,
-            )
-            
-            timeout = aiohttp.ClientTimeout(total=self.config.timeout)
-            
-            self._session = aiohttp.ClientSession(
-                connector=connector,
-                timeout=timeout,
-                headers=self._get_headers(),
-            )
-            
-            async with self._session.head(
-                self.base_url,
-                ssl=None if not self.verify_ssl else True,
-            ) as response:
-                if response.status < 500:
-                    self._update_state(ConnectionState.CONNECTED)
-                    return True
-                else:
-                    self._update_state(ConnectionState.FAILED, f"HTTP {response.status}")
-                    return False
-                    
-        except Exception as e:
-            self._update_state(ConnectionState.FAILED, str(e))
-            return False
-    
+            import requests
+        except ImportError as e:  # pragma: no cover
+            raise ImportError("requests is required for HTTP: pip install 'fuseiot[http]'") from e
+        with self._session_lock:
+            if self._sync_session is None:
+                session = requests.Session()
+                session.headers.update(self._get_headers())
+                if self.auth:
+                    session.auth = tuple(self.auth)
+                session.verify = self.verify_ssl
+                if self.client_cert:
+                    session.cert = tuple(self.client_cert)
+                self._sync_session = session
+            return self._sync_session
+
     def connect(self) -> bool:
-        """Sync connection (for compatibility)."""
+        """
+        Check the device is reachable.
+
+        Any HTTP response (even 404/405) proves the host is up; only network
+        errors or 5xx responses fail the check.
+        """
+        self._update_state(ConnectionState.CONNECTING)
+        url = f"{self.base_url}{self.health_path}"
         try:
-            import requests
-            self._sync_session = requests.Session()
-            self._sync_session.headers.update(self._get_headers())
-            if self.auth:
-                self._sync_session.auth = self.auth
-            
-            response = self._sync_session.head(
-                self.base_url,
-                timeout=self.config.timeout,
-                verify=self.verify_ssl,
-                cert=self.client_cert
-            )
-            
-            if response.ok:
-                self._update_state(ConnectionState.CONNECTED)
-                return True
-            return False
-            
+            response = self._session().get(url, timeout=self.config.timeout)
         except Exception as e:
-            self._update_state(ConnectionState.FAILED, str(e))
+            self._update_state(ConnectionState.FAILED, f"{type(e).__name__}: {e}")
             return False
-    
+        if response.status_code >= 500:
+            self._update_state(ConnectionState.FAILED, f"HTTP {response.status_code} from {url}")
+            return False
+        if response.status_code == 401:
+            self._update_state(ConnectionState.FAILED, "Authentication failed (HTTP 401)")
+            return False
+        self._update_state(ConnectionState.CONNECTED)
+        return True
+
     def disconnect(self) -> None:
-        """Sync disconnect."""
-        if self._sync_session:
-            self._sync_session.close()
-            self._sync_session = None
+        with self._session_lock:
+            if self._sync_session is not None:
+                self._sync_session.close()
+                self._sync_session = None
         self._update_state(ConnectionState.DISCONNECTED)
-    
-    async def disconnect_async(self) -> None:
-        """Async disconnect."""
-        if self._session:
-            await self._session.close()
-            self._session = None
-        self._update_state(ConnectionState.DISCONNECTED)
-    
-    @async_retry(AsyncRetryConfig(max_attempts=3, base_delay=0.1))
-    async def send_async(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """Native async send."""
-        if not AIOHTTP_AVAILABLE:
-            # Fallback to sync in thread pool
-            import asyncio
-            loop = asyncio.get_event_loop()
-            return await loop.run_in_executor(None, self.send, payload)
-        
-        if not self._session:
-            raise ProtocolError("Not connected", "http", self.base_url)
-        
-        method = payload.get("_method", "POST").upper()
-        path = payload.get("_path", "/")
-        body = {k: v for k, v in payload.items() if not k.startswith("_")}
-        
-        url = f"{self.base_url}{path}"
-        
-        import time
-        start = time.monotonic()
-        
+
+    def _decode(self, response: Any, url: str) -> Dict[str, Any]:
+        if response.status_code in (401, 403):
+            raise AuthenticationError(
+                f"HTTP {response.status_code} from {url}",
+                details={"url": url, "status": response.status_code},
+            )
+        if response.status_code >= 400:
+            raise ProtocolError(
+                f"HTTP {response.status_code}: {response.text[:200]}", "http", url,
+                status=response.status_code,
+            )
+        if not response.content:
+            return {}
         try:
-            ssl_ctx = None if not self.verify_ssl else True
-            
-            if method == "GET":
-                async with self._session.get(url, params=body if body else None, ssl=ssl_ctx) as response:
-                    data = await response.json() if response.content_type == "application/json" else {}
-            elif method == "POST":
-                async with self._session.post(url, json=body, ssl=ssl_ctx) as response:
-                    data = await response.json() if response.content_type == "application/json" else {}
-            elif method == "PUT":
-                async with self._session.put(url, json=body, ssl=ssl_ctx) as response:
-                    data = await response.json() if response.content_type == "application/json" else {}
-            else:
-                raise ValueError(f"Unsupported HTTP method: {method}")
-            
-            latency_ms = (time.monotonic() - start) * 1000
-            self._metrics["messages_sent"] += 1
-            self._metrics["messages_received"] += 1
-            self._metrics["latency_ms_total"] += latency_ms
-            
-            if response.status >= 400:
-                if response.status == 401:
-                    raise AuthenticationError(f"Authentication failed: {data}")
-                raise ProtocolError(f"HTTP {response.status}: {data}", "http", url)
-            
-            return data
-            
-        except Exception as e:
-            self._metrics["errors"] += 1
-            raise ProtocolError(f"HTTP request failed: {e}", "http", url, e)
-    
+            data = response.json()
+        except ValueError as e:
+            raise ProtocolError(f"Invalid JSON response from {url}: {e}", "http", url, e) from e
+        return data if isinstance(data, dict) else {"value": data}
+
     def send(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """Sync send using requests."""
-        try:
-            import requests
-        except ImportError:
-            raise ImportError("requests required for sync HTTP: pip install requests")
-        
-        if not self._sync_session:
-            raise ProtocolError("Not connected", "http", self.base_url)
-        
-        method = payload.get("_method", "POST").upper()
-        path = payload.get("_path", "/")
-        body = {k: v for k, v in payload.items() if not k.startswith("_")}
-        
+        """Send one request and return the decoded JSON response."""
+        method, path, body = self._split(payload)
         url = f"{self.base_url}{path}"
-        
+        start = time.monotonic()
         try:
-            if method == "GET":
-                response = self._sync_session.get(
-                    url, params=body if body else None,
-                    timeout=self.config.timeout, verify=self.verify_ssl, cert=self.client_cert
-                )
-            elif method == "POST":
-                response = self._sync_session.post(
-                    url, json=body,
-                    timeout=self.config.timeout, verify=self.verify_ssl, cert=self.client_cert
-                )
-            elif method == "PUT":
-                response = self._sync_session.put(
-                    url, json=body,
-                    timeout=self.config.timeout, verify=self.verify_ssl, cert=self.client_cert
-                )
+            kwargs: Dict[str, Any] = {"timeout": self.config.timeout}
+            if method in ("GET", "DELETE"):
+                kwargs["params"] = body or None
             else:
-                raise ValueError(f"Unsupported HTTP method: {method}")
-            
-            response.raise_for_status()
-            return response.json() if response.content else {}
-            
+                kwargs["json"] = body
+            response = self._session().request(method, url, **kwargs)
+            data = self._decode(response, url)
+        except (AuthenticationError, ProtocolError) as e:
+            self._record_error(str(e))
+            raise
         except Exception as e:
-            self._metrics["errors"] += 1
-            raise ProtocolError(f"HTTP request failed: {e}", "http", url, e)
+            self._update_state(ConnectionState.FAILED, str(e))  # records the error once
+            raise ProtocolError(f"HTTP request failed: {e}", "http", url, e) from e
+
+        if not self.is_connected:
+            self._update_state(ConnectionState.CONNECTED)
+        self._record_success((time.monotonic() - start) * 1000)
+        return data
+
+    # ------------------------------------------------------------------ async
+
+    def _has_live_async_session(self) -> bool:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return False
+        return (self._async_session is not None and not self._async_session.closed
+                and self._async_loop is loop)
+
+    def _new_async_session(self) -> Any:
+        auth = aiohttp.BasicAuth(*self.auth) if self.auth else None
+        ssl: Any = None
+        if self.verify_ssl is False:
+            ssl = False
+        elif isinstance(self.verify_ssl, str) or self.client_cert:
+            import ssl as ssl_mod
+
+            ssl = ssl_mod.create_default_context(
+                cafile=self.verify_ssl if isinstance(self.verify_ssl, str) else None
+            )
+            if self.client_cert:
+                ssl.load_cert_chain(*self.client_cert)
+        return aiohttp.ClientSession(
+            headers=self._get_headers(),
+            auth=auth,
+            timeout=aiohttp.ClientTimeout(total=self.config.timeout),
+            connector=aiohttp.TCPConnector(limit=getattr(self.config, "connection_pool_size", 100), ssl=ssl),
+        )
+
+    async def _get_async_session(self) -> Any:
+        """Persistent session for this event loop (closed by :meth:`disconnect_async`)."""
+        if not AIOHTTP_AVAILABLE:
+            return None
+        loop = asyncio.get_running_loop()
+        if not self._has_live_async_session():
+            self._async_session = self._new_async_session()
+            self._async_loop = loop
+        return self._async_session
+
+    async def connect_async(self) -> bool:
+        if not AIOHTTP_AVAILABLE:
+            return await super().connect_async()
+        url = f"{self.base_url}{self.health_path}"
+        try:
+            session = await self._get_async_session()
+            async with session.get(url) as response:
+                status = response.status
+        except Exception as e:
+            self._update_state(ConnectionState.FAILED, f"{type(e).__name__}: {e}")
+            return False
+        if status >= 500 or status == 401:
+            self._update_state(ConnectionState.FAILED, f"HTTP {status} from {url}")
+            return False
+        self._update_state(ConnectionState.CONNECTED)
+        return True
+
+    async def disconnect_async(self) -> None:
+        if self._async_session is not None and not self._async_session.closed:
+            await self._async_session.close()
+        self._async_session = None
+        self.disconnect()
+
+    async def send_async(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Native async request (falls back to a worker thread without aiohttp)."""
+        if not AIOHTTP_AVAILABLE:
+            return await super().send_async(payload)
+        method, path, body = self._split(payload)
+        url = f"{self.base_url}{path}"
+        start = time.monotonic()
+        kwargs: Dict[str, Any] = {}
+        if method in ("GET", "DELETE"):
+            if body:
+                kwargs["params"] = {k: str(v) for k, v in body.items()}
+        else:
+            kwargs["json"] = body
+        try:
+            if self._has_live_async_session():
+                async with self._async_session.request(method, url, **kwargs) as response:
+                    status = response.status
+                    text = await response.text()
+            else:
+                # No persistent session (connect_async not called on this loop):
+                # use a short-lived one so nothing leaks when the loop ends.
+                session = self._new_async_session()
+                async with session, session.request(method, url, **kwargs) as response:
+                    status = response.status
+                    text = await response.text()
+        except Exception as e:
+            self._record_error(str(e))
+            raise ProtocolError(f"HTTP request failed: {e}", "http", url, e) from e
+
+        if status in (401, 403):
+            self._record_error(f"HTTP {status}")
+            raise AuthenticationError(f"HTTP {status} from {url}", details={"url": url, "status": status})
+        if status >= 400:
+            self._record_error(f"HTTP {status}")
+            raise ProtocolError(f"HTTP {status}: {text[:200]}", "http", url, status=status)
+        self._record_success((time.monotonic() - start) * 1000)
+        if not text:
+            return {}
+        import json
+
+        try:
+            data = json.loads(text)
+        except ValueError as e:
+            raise ProtocolError(f"Invalid JSON response from {url}: {e}", "http", url, e) from e
+        return data if isinstance(data, dict) else {"value": data}

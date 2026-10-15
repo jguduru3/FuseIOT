@@ -1,3 +1,3 @@
-from fuseiot.discovery.mdns import MDNSDiscovery, DiscoveryResult
+from fuseiot.discovery.mdns import DiscoveryResult, MDNSDiscovery
 
 __all__ = ["MDNSDiscovery", "DiscoveryResult"]

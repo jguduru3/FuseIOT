@@ -1,0 +1,117 @@
+# FuseIoT demo deployment: simulated devices, no hardware needed.
+#
+#   fuseiot -c examples/demo.yaml serve
+#   open http://127.0.0.1:8080
+#
+# Replace "protocol: virtual" entries with real endpoints (see examples/config.yaml).
+
+default_ttl: 5.0
+confirm_timeout: 3.0
+circuit_breaker_enabled: true
+history_enabled: true
+history_path: ./data/history.db
+log_level: INFO
+
+server_host: 127.0.0.1
+server_port: 8080
+api_token: ${FUSEIOT_API_TOKEN:-}
+
+# Accounts for the app: create the first one with
+#   fuseiot -c <this file> user add admin --role admin
+users_db: ./data/users.db
+
+# Poll devices every 30 s: picks up wall-switch changes and detects offline devices.
+monitor_interval: 30
+
+# Needed for sunrise/sunset schedules. Change to your home.
+location:
+  latitude: 12.97
+  longitude: 77.59
+  timezone: Asia/Kolkata
+
+# Phone notifications. "log" just writes to the server log; for real push
+# notifications install the ntfy app, subscribe to a long random topic and use:
+#   phone: {type: ntfy, topic: my-home-change-me-8f3k2}
+notifications:
+  channels:
+    log: {type: log}
+  alerts:
+    device_offline: [log]
+    device_online: [log]
+    command_failed: [log]
+
+devices:
+  - id: living_room_light
+    name: Living room light
+    capability: switchable
+    protocol: virtual
+    options: {settle_ms: 120}
+
+  - id: desk_lamp
+    name: Desk lamp
+    capability: dimmable
+    protocol: virtual
+
+  - id: mood_light
+    name: Mood light
+    capability: rgb_light
+    protocol: virtual
+
+  - id: hallway_temp
+    name: Hallway temperature
+    capability: sensor
+    protocol: virtual
+    options: {sensor_noise: 0.3, initial_state: {value: 19.5}}
+    capability_options: {unit: celsius}
+
+  - id: heating
+    name: Heating
+    capability: thermostat
+    protocol: virtual
+
+  - id: blinds
+    name: Blinds
+    capability: motor
+    protocol: virtual
+    capability_options: {position_range: [0, 100]}
+
+  - id: front_door
+    name: Front door
+    capability: lock
+    protocol: virtual
+
+  - id: kettle_plug
+    name: Kettle plug
+    capability: smart_plug
+    protocol: virtual
+    options: {load_watts: 2000}
+    capability_options: {cost_per_kwh: 0.30, currency: EUR}
+
+rules:
+  - name: cold_hallway_heating
+    when: {device: hallway_temp, property: value, op: "<", value: 18}
+    then:
+      - {device: heating, command: set_mode, params: {mode: heat}}
+    else:
+      - {device: heating, command: set_mode, params: {mode: "off"}}
+    cooldown: 60
+
+  - name: door_left_unlocked
+    when: {device: front_door, property: lock_state, op: "==", value: unlocked}
+    then:
+      - {notify: log, message: "Front door unlocked at {time}", title: "Front door", priority: high}
+
+schedules:
+  - name: porch_lights_at_sunset
+    at: sunset-15m
+    then: {device: living_room_light, command: "on"}
+  - name: lights_off_at_night
+    at: "23:30"
+    then:
+      - {device: living_room_light, command: "off"}
+      - {device: mood_light, command: "off"}
+  - name: weekday_morning_heating
+    cron: "30 6 * * 1-5"
+    then:
+      - {device: heating, command: set_temperature, params: {temperature: 21.5}}
+      - {notify: log, message: "Heating on; hallway is {hallway_temp.value} C"}

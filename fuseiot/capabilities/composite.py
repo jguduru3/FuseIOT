@@ -1,87 +1,98 @@
-from typing import Dict, Any, Optional
-from .base import Capability, CapabilityConfig
-from .switchable import Switchable
-from .energy_monitor import EnergyMonitor
+"""Devices that combine several capabilities behind one ID."""
+from typing import Any, Dict, Optional
+
 from ..logging_config import get_logger
+from .base import Capability
+from .energy_monitor import EnergyMonitor
+from .switchable import Switchable
 
 logger = get_logger("capabilities.composite")
 
 
 class CompositeCapability(Capability):
     """
-    Base for devices with multiple capabilities.
-    
-    Example: Smart plug with power monitoring.
+    Base for multi-function devices.
+
+    Sub-capabilities get IDs of the form ``<device_id>.<name>`` so their
+    cache entries and events stay separate.
     """
-    
-    def __init__(self, protocol, cache, config=None, event_bus=None, **kwargs):
-        super().__init__(protocol, cache, config, event_bus=event_bus, **kwargs)
+
+    def __init__(self, protocol: Any, cache: Any, config: Any = None, **kwargs: Any):
+        super().__init__(protocol, cache, config, **kwargs)
         self._capabilities: Dict[str, Capability] = {}
-    
+
     def add_capability(self, name: str, capability: Capability) -> None:
-        """Add sub-capability."""
         self._capabilities[name] = capability
-    
+
     def get_capability(self, name: str) -> Optional[Capability]:
-        """Get sub-capability."""
         return self._capabilities.get(name)
-    
+
+    def _sub_kwargs(self, name: str) -> Dict[str, Any]:
+        return {"event_bus": self.event_bus, "device_id": f"{self.id}.{name}"}
+
     @property
     def category(self) -> str:
         return "composite"
-    
-    def read_state(self) -> Dict[str, Any]:
-        """Read all sub-capability states."""
-        state = {}
-        for name, cap in self._capabilities.items():
-            try:
-                state[name] = cap.read_state()
-            except Exception as e:
-                logger.warning("sub_capability_read_failed", name=name, error=str(e))
-                state[name] = {"error": str(e)}
-        return state
+
+    def _fetch_state(self) -> Dict[str, Any]:
+        return {name: cap._fetch_state() for name, cap in self._capabilities.items()}
+
+    def read_state(self, fresh: bool = False) -> Dict[str, Any]:
+        return {name: cap.read_state(fresh=fresh) for name, cap in self._capabilities.items()}
+
+    def last_known_state(self) -> Optional[Dict[str, Any]]:
+        states = {name: cap.last_known_state() for name, cap in self._capabilities.items()}
+        return states if any(v is not None for v in states.values()) else None
+
+    def add_result_listener(self, listener):  # type: ignore[override]
+        removers = [super().add_result_listener(listener)]
+        removers += [c.add_result_listener(listener) for c in self._capabilities.values()]
+
+        def remove() -> None:
+            for r in removers:
+                r()
+
+        return remove
 
 
 class SmartPlug(CompositeCapability):
-    """
-    Smart plug with power monitoring.
-    
-    Combines Switchable + EnergyMonitor.
-    """
-    
-    def __init__(self, protocol, cache, config=None, cost_per_kwh: float = 0.15, event_bus=None, **kwargs):
-        super().__init__(protocol, cache, config, event_bus=event_bus, **kwargs)
-        
-        # Create sub-capabilities
-        self.switch = Switchable(protocol, cache, config, event_bus=event_bus, **kwargs)
-        self.energy = EnergyMonitor(protocol, cache, config, cost_per_kwh=cost_per_kwh, event_bus=event_bus, **kwargs)
-        
+    """Smart plug with power monitoring (``Switchable`` + ``EnergyMonitor``)."""
+
+    commands = ("on", "off", "toggle", "reset_counter")
+
+    def __init__(self, protocol: Any, cache: Any, config: Any = None,
+                 cost_per_kwh: float = 0.15, currency: str = "USD", **kwargs: Any):
+        super().__init__(protocol, cache, config, **kwargs)
+        self.switch = Switchable(protocol, cache, self.config, **self._sub_kwargs("switch"))
+        self.energy = EnergyMonitor(protocol, cache, self.config, cost_per_kwh=cost_per_kwh,
+                                    currency=currency, **self._sub_kwargs("energy"))
         self.add_capability("switch", self.switch)
         self.add_capability("energy", self.energy)
-    
+
     @property
     def category(self) -> str:
         return "smart_plug"
-    
-    def on(self, **kwargs):
-        """Turn on."""
+
+    def on(self, **kwargs: Any):
         return self.switch.on(**kwargs)
-    
-    def off(self, **kwargs):
-        """Turn off."""
+
+    def off(self, **kwargs: Any):
         return self.switch.off(**kwargs)
-    
+
+    def toggle(self, **kwargs: Any):
+        return self.switch.toggle(**kwargs)
+
+    def reset_counter(self, **kwargs: Any):
+        return self.energy.reset_counter(**kwargs)
+
     @property
     def is_on(self) -> bool:
-        """Power state."""
         return self.switch.is_on
-    
+
     @property
     def power(self) -> float:
-        """Current power draw."""
         return self.energy.power
-    
+
     @property
     def today_cost(self) -> float:
-        """Cost today."""
-        return self.energy.today_cost
+        return self.energy.total_cost

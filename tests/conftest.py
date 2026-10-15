@@ -1,131 +1,112 @@
-# tests/conftest.py
-"""pytest configuration with standard library mocks only."""
+"""Shared fixtures for the FuseIoT test suite."""
+import os
+from typing import Any, Callable, List
 
 import pytest
-import asyncio
-from unittest.mock import Mock, MagicMock, patch
-import responses
 
-from fuseiot import Hub, HTTP, Switchable, Sensor, Motor
-from fuseiot.protocols.base import Protocol
-from fuseiot.state.persistence import PersistenceBackend
+from fuseiot import Hub
+from fuseiot.logging_config import configure_logging
+from fuseiot.simulation.http_device import SimulatedHTTPDevice
+from fuseiot.simulation.virtual_device import VirtualDevice
+from tests.helpers import FakeBroker, FakeClient, fast_config, start_fast
+
+# Keep the library quiet and never bind log handlers to pytest's capture streams.
+configure_logging(level="CRITICAL", console=False)
 
 
-@pytest.fixture
-def event_loop():
-    """Create event loop for async tests."""
-    loop = asyncio.get_event_loop_policy().new_event_loop()
-    yield loop
-    loop.close()
+@pytest.fixture(autouse=True)
+def _isolate(monkeypatch: pytest.MonkeyPatch):
+    """Strip FUSEIOT_* variables from the environment and reset logging after each test."""
+    for key in list(os.environ):
+        if key.startswith("FUSEIOT_"):
+            monkeypatch.delenv(key, raising=False)
+    yield
+    configure_logging(level="CRITICAL", console=False)
 
 
 @pytest.fixture
 def hub():
-    """Fresh Hub instance."""
-    return Hub(default_ttl=0.1)
+    h = Hub(default_ttl=5.0)
+    yield h
+    h.close()
 
 
 @pytest.fixture
-def mock_protocol():
-    """Mock protocol."""
-    protocol = Mock(spec=Protocol)
-    protocol.name = "mock"
-    protocol.is_connected = True
-    protocol.endpoint = "mock://test"
-    protocol.send.return_value = {"status": "ok"}
-    protocol.send_async = Mock()
-    return protocol
+def add_virtual(hub: Hub) -> Callable[..., Any]:
+    """add_virtual(device_type, cls, device_id, config=None, cap_kwargs=None, **sim) -> capability"""
+
+    def _add(device_type: str, cls: Any, device_id: str, config: Any = None,
+             cap_kwargs: Any = None, **sim: Any) -> Any:
+        return hub.add_device(VirtualDevice(device_type, **sim), cls, device_id=device_id,
+                              config=config if config is not None else fast_config(),
+                              **(cap_kwargs or {}))
+
+    return _add
 
 
 @pytest.fixture
-def mock_persistence():
-    """Mock persistence backend."""
-    persistence = Mock(spec=PersistenceBackend)
-    persistence.get.return_value = None
-    return persistence
+def sim_http():
+    """Factory for SimulatedHTTPDevice servers that are stopped after the test."""
+    started: List[SimulatedHTTPDevice] = []
+
+    def _make(device_type: str = "switchable", **kwargs: Any) -> SimulatedHTTPDevice:
+        dev = SimulatedHTTPDevice(device_type, **kwargs)
+        start_fast(dev, dev._server)
+        started.append(dev)
+        return dev
+
+    yield _make
+    for dev in started:
+        dev.stop()
 
 
 @pytest.fixture
-def responses_mock():
-    """HTTP mocking fixture using responses library."""
-    with responses.RequestsMock() as rsps:
-        yield rsps
+def fake_mqtt(monkeypatch: pytest.MonkeyPatch) -> FakeBroker:
+    """Replace paho's Client with an in-memory fake bound to a fresh broker."""
+    import fuseiot.protocols.mqtt as mqtt_module
+
+    broker = FakeBroker()
+    client_cls = type("BoundFakeClient", (FakeClient,), {"broker": broker, "instances": []})
+    broker.client_cls = client_cls
+    monkeypatch.setattr(mqtt_module.mqtt, "Client", client_cls)
+    return broker
 
 
 @pytest.fixture
-def mock_http_relay(responses_mock):
-    """Pre-configured mock HTTP relay endpoint."""
-    base_url = "http://192.168.1.45/api"
-    
-    # State endpoint
-    responses_mock.add(
-        responses.GET,
-        f"{base_url}/state",
-        json={"power": False},
-        status=200
-    )
-    
-    # On endpoint
-    responses_mock.add(
-        responses.POST,
-        f"{base_url}/on",
-        json={"power": True, "status": "ok"},
-        status=200
-    )
-    
-    # Off endpoint
-    responses_mock.add(
-        responses.POST,
-        f"{base_url}/off",
-        json={"power": False, "status": "ok"},
-        status=200
-    )
-    
-    return base_url
+def closed_port():
+    """A localhost port whose 'device' accepts TCP connections and hangs up immediately.
+
+    (A genuinely closed port is avoided because Windows retries refused
+    connections for ~2 s.)
+    """
+    import socket
+    import threading
+
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(16)
+    srv.settimeout(0.05)
+    stop = threading.Event()
+
+    def loop() -> None:
+        while not stop.is_set():
+            try:
+                conn, _ = srv.accept()
+            except OSError:
+                continue
+            conn.close()
+
+    t = threading.Thread(target=loop, daemon=True)
+    t.start()
+    yield srv.getsockname()[1]
+    stop.set()
+    t.join(timeout=2)
+    srv.close()
 
 
 @pytest.fixture
-def mock_http_sensor(responses_mock):
-    """Pre-configured mock HTTP sensor endpoint."""
-    base_url = "http://192.168.1.46/api"
-    
-    responses_mock.add(
-        responses.GET,
-        f"{base_url}/reading",
-        json={"value": 22.5, "unit": "celsius", "timestamp": 1234567890},
-        status=200
-    )
-    
-    return base_url
+def fast_scrypt(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Cheaper scrypt parameters for tests that create many users (hashes still self-describe n/r/p)."""
+    import fuseiot.auth as auth_module
 
-
-@pytest.fixture
-def mock_http_motor(responses_mock):
-    """Pre-configured mock HTTP motor endpoint."""
-    base_url = "http://192.168.1.47/api"
-    
-    # Status endpoint
-    responses_mock.add(
-        responses.GET,
-        f"{base_url}/status",
-        json={"position": 0.0, "speed": 0.0, "moving": False, "homed": True},
-        status=200
-    )
-    
-    # Move endpoint
-    responses_mock.add(
-        responses.POST,
-        f"{base_url}/move",
-        json={"position": 90.0, "moving": False},
-        status=200
-    )
-    
-    # Home endpoint
-    responses_mock.add(
-        responses.POST,
-        f"{base_url}/home",
-        json={"position": 0.0, "homed": True},
-        status=200
-    )
-    
-    return base_url
+    monkeypatch.setitem(auth_module._SCRYPT, "n", 2 ** 10)

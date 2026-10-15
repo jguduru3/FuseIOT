@@ -1,30 +1,34 @@
-#!/bin/bash
-# setup.sh - Setup script for FuseIoT
+#!/usr/bin/env bash
+# Development setup for FuseIoT (Linux/macOS/Git Bash). Windows PowerShell: setup.ps1
+set -euo pipefail
 
-echo "Setting up FuseIoT..."
+PYTHON="${PYTHON:-python3}"
+command -v "$PYTHON" >/dev/null 2>&1 || PYTHON=python
 
-# Create virtual environment if it doesn't exist
+echo "Setting up FuseIoT with $($PYTHON --version)..."
 if [ ! -d ".venv" ]; then
-    echo "Creating virtual environment..."
-    python -m venv .venv
+    "$PYTHON" -m venv .venv
 fi
 
-# Activate virtual environment
-source .venv/bin/activate || source .venv/Scripts/activate
+if [ -f ".venv/bin/activate" ]; then
+    # shellcheck disable=SC1091
+    source .venv/bin/activate
+else
+    # shellcheck disable=SC1091
+    source .venv/Scripts/activate
+fi
 
-# Upgrade pip
-pip install --upgrade pip
+python -m pip install --upgrade pip
+python -m pip install -e ".[dev]"
 
-# Install with all dependencies
-echo "Installing FuseIoT with all dependencies..."
-pip install -e ".[all]"
+echo "Linting..."
+ruff check fuseiot examples
 
-# Run tests
 echo "Running tests..."
-pytest tests/ -v --tb=short
+pytest -q
 
-echo "Setup complete!"
-echo ""
-echo "Quick start:"
+echo
+echo "Setup complete. Try:"
 echo "  fuseiot --help"
+echo "  fuseiot -c examples/demo.yaml serve     # dashboard at http://127.0.0.1:8080"
 echo "  python examples/basic_relay.py"

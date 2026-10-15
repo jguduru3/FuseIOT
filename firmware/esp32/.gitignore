@@ -1,0 +1,6 @@
+# Your WiFi password / token live here
+include/config.h
+
+# PlatformIO build output
+.pio/
+.vscode/

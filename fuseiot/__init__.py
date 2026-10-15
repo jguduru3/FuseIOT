@@ -1,150 +1,121 @@
-﻿
-from fuseiot.__version__ import __version__, __version_info__
+"""FuseIoT - deterministic device control SDK for Python."""
 
-# Core classes
-from fuseiot.hub import Hub, HubConfig
-from fuseiot.result import CommandResult, CommandStatus, BatchResult
-from fuseiot.state.cache import StateCache, CacheEntry
-from fuseiot.state.persistence import PersistenceBackend, SQLiteBackend, RedisBackend
-from fuseiot.state.events import EventBus, StateChangeEvent
-from fuseiot.config import Config, from_yaml, from_json, from_env
-from fuseiot.logging_config import configure_logging, get_logger
+from fuseiot.__version__ import __version__, __version_info__
+from fuseiot.auth import UserStore
+from fuseiot.automation.actions import NotifyAction
+
+# Home automation
+from fuseiot.automation.schedule import Location, Schedule, Scheduler
+
+# Capabilities
+from fuseiot.capabilities.base import AsyncCapability, Capability, CapabilityConfig
+from fuseiot.capabilities.composite import CompositeCapability, SmartPlug
+from fuseiot.capabilities.dimmable import Dimmable
+from fuseiot.capabilities.energy_monitor import EnergyMonitor
+from fuseiot.capabilities.lock import Lock, LockState
+from fuseiot.capabilities.motor import Motor
+from fuseiot.capabilities.rgb_light import ColorMode, RGBLight
+from fuseiot.capabilities.sensor import Sensor
+from fuseiot.capabilities.switchable import Switchable
+from fuseiot.capabilities.thermostat import Thermostat, ThermostatMode
+
+# Cloud connectors (their SDK dependencies are only needed when connecting)
+from fuseiot.cloud import AWSIoT, AzureIoT, CloudConnector, GCPIoT, MQTTBridge
+from fuseiot.config import Config, auto_config, from_env, from_json, from_yaml
+from fuseiot.discovery.mdns import DiscoveryResult, MDNSDiscovery
+
+# Edge computing, discovery, monitoring, simulation, server (stdlib-only)
+from fuseiot.edge.rules import Action, Condition, Rule, RuleEngine, Trigger
 
 # Exceptions
 from fuseiot.exceptions import (
-    FuseIoTError,
-    DeviceError,
-    ProtocolError,
-    CommandError,
-    ConfirmationError,
-    StateError,
-    CacheError,
-    ConfigurationError,
-    ValidationError,
-    TimeoutError,
-    ConcurrencyError,
-    ResourceExhaustedError,
-    CircuitOpenError,
-    RateLimitError,
     AuthenticationError,
     AuthorizationError,
-    DiscoveryError,
+    CacheError,
+    CircuitOpenError,
     CloudError,
+    CommandError,
+    ConcurrencyError,
+    ConfigurationError,
+    ConfirmationError,
+    DeviceError,
+    DiscoveryError,
+    FuseIoTError,
+    ProtocolError,
+    RateLimitError,
+    ResourceExhaustedError,
+    StateError,
+    TimeoutError,
+    ValidationError,
 )
 
-# Types
-from fuseiot.types import (
-    StateVector,
-    CommandStatus as CommandStatusEnum,
-    DeviceID,
-    Payload,
-    Handler,
-    Readable,
-    SwitchableProtocol,
-    SensorProtocol,
-    MotorProtocol,
-    DimmableProtocol,
-    LockProtocol,
-    RGBLightProtocol,
-    HealthStatus,
-    DeviceInfo,
-    CapabilityType,
-    ProtocolType,
-    Color,
-    Position,
-    Brightness,
-)
+# Core classes
+from fuseiot.hub import Hub, HubConfig
+from fuseiot.logging_config import configure_logging, get_logger
+from fuseiot.monitoring.device_monitor import DeviceMonitor
+from fuseiot.monitoring.health import HealthServer
+from fuseiot.monitoring.health import HealthStatus as ServerHealth
+from fuseiot.monitoring.metrics import MetricsCollector, PrometheusMetrics
+from fuseiot.notify import NotificationManager
 
 # Protocols
-from fuseiot.protocols.base import Protocol, ProtocolConfig, AsyncProtocol
+from fuseiot.protocols.base import AsyncProtocol, Protocol, ProtocolConfig
 from fuseiot.protocols.http import HTTP, HTTPConfig
 from fuseiot.protocols.https import HTTPS, HTTPSConfig
 from fuseiot.protocols.mqtt import MQTT, MQTTConfig
 from fuseiot.protocols.mqtts import MQTTS, MQTTSConfig
+from fuseiot.protocols.serial import Serial, SerialConfig
 
-# Optional protocols - may raise ImportError if dependencies not installed
-try:
-    from fuseiot.protocols.web_socket import WebSocket, WebSocketConfig
-except ImportError:
-    WebSocket = None  # type: ignore
-    WebSocketConfig = None  # type: ignore
+# Optional dependencies (websockets, pyserial) are checked on instantiation
+from fuseiot.protocols.web_socket import WebSocket, WebSocketConfig
+from fuseiot.registry import load_devices
+from fuseiot.result import BatchResult, CommandResult, CommandStatus
+from fuseiot.runtime import Runtime, validate_config
+from fuseiot.server.app import FuseIoTServer, run_server
+from fuseiot.simulation.http_device import SimulatedHTTPDevice
+from fuseiot.simulation.virtual_device import VirtualDevice, VirtualDeviceConfig
+from fuseiot.state.cache import CacheEntry, StateCache
+from fuseiot.state.events import EventBus, StateChangeEvent
+from fuseiot.state.history import StateHistory
+from fuseiot.state.persistence import PersistenceBackend, RedisBackend, SQLiteBackend
 
-try:
-    from fuseiot.protocols.serial import Serial, SerialConfig
-except ImportError:
-    Serial = None  # type: ignore
-    SerialConfig = None  # type: ignore
-
-# Capabilities
-from fuseiot.capabilities.base import Capability, CapabilityConfig, AsyncCapability
-from fuseiot.capabilities.switchable import Switchable
-from fuseiot.capabilities.dimmable import Dimmable
-from fuseiot.capabilities.sensor import Sensor
-from fuseiot.capabilities.motor import Motor
-from fuseiot.capabilities.thermostat import Thermostat, ThermostatMode
-from fuseiot.capabilities.lock import Lock, LockState
-from fuseiot.capabilities.rgb_light import RGBLight, ColorMode
-from fuseiot.capabilities.energy_monitor import EnergyMonitor
-from fuseiot.capabilities.composite import CompositeCapability, SmartPlug
-
-# Utilities
-from fuseiot.utils.retry import retry, RetryConfig, async_retry, AsyncRetryConfig
-from fuseiot.utils.async_tools import run_sync, run_async, AsyncLock, create_task_safely
+# Types
+from fuseiot.types import (
+    Brightness,
+    CapabilityType,
+    Color,
+    DeviceID,
+    DeviceInfo,
+    DimmableProtocol,
+    Handler,
+    HealthStatus,
+    LockProtocol,
+    MotorProtocol,
+    Payload,
+    Position,
+    ProtocolType,
+    Readable,
+    RGBLightProtocol,
+    SensorProtocol,
+    StateVector,
+    SwitchableProtocol,
+)
+from fuseiot.types import (
+    CommandStatus as CommandStatusEnum,
+)
+from fuseiot.utils.async_tools import AsyncLock, create_task_safely, run_async, run_sync
 from fuseiot.utils.circuit_breaker import CircuitBreaker, CircuitState
 from fuseiot.utils.rate_limiter import RateLimiter, TokenBucket
-from fuseiot.utils.validation import DeviceModel, CommandModel, StateModel
 
-# Cloud connectors - optional
-try:
-    from fuseiot.cloud.base import CloudConnector
-    from fuseiot.cloud.aws_iot import AWSIoT
-    from fuseiot.cloud.azure_iot import AzureIoT
-    from fuseiot.cloud.gcp_iot import GCPIoT
-except ImportError:
-    CloudConnector = None  # type: ignore
-    AWSIoT = None  # type: ignore
-    AzureIoT = None  # type: ignore
-    GCPIoT = None  # type: ignore
-
-# Edge computing
-try:
-    from fuseiot.edge.rules import RuleEngine, Rule, Condition, Action, Trigger
-except ImportError:
-    RuleEngine = None  # type: ignore
-    Rule = None  # type: ignore
-    Condition = None  # type: ignore
-    Action = None  # type: ignore
-    Trigger = None  # type: ignore
-
-# Discovery
-try:
-    from fuseiot.discovery.mdns import MDNSDiscovery, DiscoveryResult
-except ImportError:
-    MDNSDiscovery = None  # type: ignore
-    DiscoveryResult = None  # type: ignore
-
-# Monitoring
-try:
-    from fuseiot.monitoring.metrics import MetricsCollector, PrometheusMetrics
-    from fuseiot.monitoring.health import HealthServer, HealthStatus as ServerHealth
-except ImportError:
-    MetricsCollector = None  # type: ignore
-    PrometheusMetrics = None  # type: ignore
-    HealthServer = None  # type: ignore
-    ServerHealth = None  # type: ignore
-
-# Simulation
-try:
-    from fuseiot.simulation.virtual_device import VirtualDevice, VirtualDeviceConfig
-except ImportError:
-    VirtualDevice = None  # type: ignore
-    VirtualDeviceConfig = None  # type: ignore
+# Utilities
+from fuseiot.utils.retry import AsyncRetryConfig, RetryConfig, async_retry, retry
+from fuseiot.utils.validation import CommandModel, DeviceModel, StateModel
 
 __all__ = [
     # Version
     "__version__",
     "__version_info__",
-    
+
     # Core
     "Hub",
     "HubConfig",
@@ -163,9 +134,10 @@ __all__ = [
     "from_yaml",
     "from_json",
     "from_env",
+    "auto_config",
     "configure_logging",
     "get_logger",
-    
+
     # Exceptions
     "FuseIoTError",
     "DeviceError",
@@ -185,7 +157,7 @@ __all__ = [
     "AuthorizationError",
     "DiscoveryError",
     "CloudError",
-    
+
     # Types
     "StateVector",
     "DeviceID",
@@ -205,7 +177,7 @@ __all__ = [
     "Color",
     "Position",
     "Brightness",
-    
+
     # Protocols
     "Protocol",
     "AsyncProtocol",
@@ -222,7 +194,7 @@ __all__ = [
     "WebSocketConfig",
     "Serial",
     "SerialConfig",
-    
+
     # Capabilities
     "Capability",
     "AsyncCapability",
@@ -240,7 +212,7 @@ __all__ = [
     "EnergyMonitor",
     "CompositeCapability",
     "SmartPlug",
-    
+
     # Utilities
     "retry",
     "RetryConfig",
@@ -257,31 +229,50 @@ __all__ = [
     "DeviceModel",
     "CommandModel",
     "StateModel",
-    
+
     # Cloud
     "CloudConnector",
+    "MQTTBridge",
     "AWSIoT",
     "AzureIoT",
     "GCPIoT",
-    
+
     # Edge
     "RuleEngine",
     "Rule",
     "Condition",
     "Action",
     "Trigger",
-    
+
     # Discovery
     "MDNSDiscovery",
     "DiscoveryResult",
-    
+
     # Monitoring
     "MetricsCollector",
     "PrometheusMetrics",
     "HealthServer",
     "ServerHealth",
-    
+
     # Simulation
     "VirtualDevice",
     "VirtualDeviceConfig",
+    "SimulatedHTTPDevice",
+
+    # Deployment
+    "FuseIoTServer",
+    "run_server",
+    "load_devices",
+    "StateHistory",
+
+    # Home automation
+    "Location",
+    "Schedule",
+    "Scheduler",
+    "NotifyAction",
+    "NotificationManager",
+    "DeviceMonitor",
+    "UserStore",
+    "Runtime",
+    "validate_config",
 ]

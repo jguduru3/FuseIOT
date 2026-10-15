@@ -1,14 +1,581 @@
-<!DOCTYPE html>
-<html>
+<!doctype html>
+<html lang="en">
 <head>
-    <title>FuseIoT Dashboard</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#2f6fde">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="FuseIoT">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="/static/manifest.webmanifest">
+<link rel="icon" type="image/png" href="/static/icons/icon-192.png">
+<link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
+<title>FuseIoT Home</title>
+<style>
+  :root {
+    --bg: #f4f5f7; --panel: #ffffff; --text: #16181d; --muted: #646b78; --border: #e2e5ea;
+    --accent: #2f6fde; --accent-soft: #e6eefc; --ok: #1f9d55; --bad: #d64545; --warn: #b7791f;
+    --nav-h: 62px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #111317; --panel: #1a1d23; --text: #e8eaee; --muted: #9aa1ad; --border: #2a2e36;
+            --accent: #6b9cff; --accent-soft: #1d2a44; --ok: #3cc47c; --bad: #ff6b6b; --warn: #e8b24a; }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+               font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  button, input, select { font: inherit; color: inherit; }
+  input, select { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; min-width: 0; }
+  button { background: var(--accent); color: #fff; border: 0; border-radius: 8px; padding: 8px 14px; cursor: pointer; }
+  button.ghost { background: transparent; color: var(--text); border: 1px solid var(--border); }
+  button.danger { background: var(--bad); }
+  button { white-space: nowrap; }
+  button:disabled { opacity: .55; cursor: progress; }
+  header { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; justify-content: space-between; gap: 10px;
+           padding: calc(10px + env(safe-area-inset-top)) 16px 10px; background: var(--panel); border-bottom: 1px solid var(--border); }
+  header h1 { font-size: 17px; margin: 0; }
+  .sub { color: var(--muted); font-size: 12.5px; }
+  main { padding: 16px 16px calc(var(--nav-h) + 24px + env(safe-area-inset-bottom)); max-width: 1100px; margin: 0 auto; }
+  nav.tabs { position: fixed; bottom: 0; left: 0; right: 0; z-index: 5; display: flex; background: var(--panel);
+             border-top: 1px solid var(--border); padding-bottom: env(safe-area-inset-bottom); }
+  nav.tabs button { flex: 1; background: none; color: var(--muted); border-radius: 0; padding: 10px 4px; height: var(--nav-h);
+                    display: flex; flex-direction: column; align-items: center; gap: 2px; font-size: 12px; }
+  nav.tabs button.on { color: var(--accent); }
+  nav.tabs svg { width: 22px; height: 22px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  @media (min-width: 900px) {
+    nav.tabs { position: sticky; top: 57px; bottom: auto; border-top: 0; border-bottom: 1px solid var(--border); justify-content: center; }
+    nav.tabs button { flex: 0 0 140px; flex-direction: row; justify-content: center; gap: 8px; font-size: 14px; height: 46px; }
+    main { padding-bottom: 32px; }
+  }
+  .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .name { font-weight: 600; overflow-wrap: anywhere; }
+  .meta { color: var(--muted); font-size: 12.5px; }
+  .pill { font-size: 12px; padding: 2px 9px; border-radius: 999px; background: var(--bg); color: var(--muted); white-space: nowrap; }
+  .pill.ok { color: var(--ok); } .pill.bad { color: var(--bad); }
+  .power { width: 56px; height: 32px; border-radius: 999px; background: var(--border); position: relative; padding: 0; flex: none; }
+  .power::after { content: ""; position: absolute; top: 3px; left: 3px; width: 26px; height: 26px; border-radius: 50%; background: #fff; transition: transform .15s; }
+  .power.on { background: var(--ok); } .power.on::after { transform: translateX(24px); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  td { padding: 3px 0; border-bottom: 1px dashed var(--border); vertical-align: top; overflow-wrap: anywhere; }
+  td:first-child { color: var(--muted); width: 45%; }
+  details summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+  .cmds { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .cmd { display: flex; gap: 4px; align-items: center; }
+  .cmd input { width: 84px; }
+  .result { font-size: 12.5px; min-height: 1em; color: var(--muted); }
+  .result.ok { color: var(--ok); } .result.bad { color: var(--bad); }
+  .result:empty { display: none; }
+  h2 { font-size: 15px; margin: 18px 0 10px; color: var(--muted); font-weight: 600; }
+  .list .item { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 12px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+  .list .item > div:first-child { flex: 1 1 170px; min-width: 0; overflow-wrap: anywhere; }
+  .list .item > .row { flex-wrap: wrap; justify-content: flex-end; }
+  .list .item:last-child { border-bottom: 0; }
+  .empty { text-align: center; color: var(--muted); padding: 36px 0; }
+  .toggle { width: 44px; height: 26px; border-radius: 999px; background: var(--border); position: relative; padding: 0; flex: none; }
+  .toggle::after { content: ""; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%; background: #fff; transition: transform .15s; }
+  .toggle.on { background: var(--accent); } .toggle.on::after { transform: translateX(18px); }
+  .login { max-width: 360px; margin: 10vh auto; display: flex; flex-direction: column; gap: 12px; }
+  .login img { width: 64px; height: 64px; align-self: center; border-radius: 16px; }
+  .form, .card.form { display: flex; flex-direction: row; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .form input { flex: 1 1 170px; }
+  .notice { background: var(--accent-soft); border-radius: 10px; padding: 10px 12px; font-size: 13.5px; }
+  .error { color: var(--bad); font-size: 13.5px; }
+  .hidden { display: none !important; }
+  code.secret { display: block; padding: 8px; background: var(--bg); border-radius: 8px; overflow-wrap: anywhere; user-select: all; }
+</style>
 </head>
 <body>
-    <h1>Devices</h1>
-    <ul>
-        {% for device in devices %}
-        <li>{{ device }}</li>
-        {% endfor %}
-    </ul>
+<section id="login-view" class="login hidden" aria-label="Sign in">
+  <img src="/static/icons/icon-192.png" alt="">
+  <h1 style="text-align:center;margin:0">FuseIoT Home</h1>
+  <form id="login-form" class="card" autocomplete="on">
+    <div id="pw-fields">
+      <label class="meta" for="login-user">Username</label>
+      <input id="login-user" autocomplete="username" style="width:100%">
+      <label class="meta" for="login-pass" style="margin-top:8px;display:block">Password</label>
+      <input id="login-pass" type="password" autocomplete="current-password" style="width:100%">
+    </div>
+    <details id="token-login">
+      <summary>Use an API token instead</summary>
+      <input id="login-token" type="password" placeholder="fio_… or service token" style="width:100%;margin-top:8px">
+    </details>
+    <div id="login-error" class="error" role="alert"></div>
+    <button type="submit">Sign in</button>
+  </form>
+</section>
+
+<div id="app-view" class="hidden">
+  <header>
+    <div>
+      <h1>FuseIoT Home</h1>
+      <div class="sub" id="summary">Loading…</div>
+    </div>
+    <div class="row">
+      <button id="install-btn" class="ghost hidden">Install app</button>
+      <button id="logout-btn" class="ghost hidden">Sign out</button>
+    </div>
+  </header>
+  <nav class="tabs" aria-label="Sections">
+    <button data-tab="devices" class="on"><svg viewBox="0 0 24 24"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2z"/></svg>Devices</button>
+    <button data-tab="automations"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>Automations</button>
+    <button data-tab="alerts"><svg viewBox="0 0 24 24"><path d="M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.9 1.9 0 0 0 3.4 0"/></svg>Alerts</button>
+    <button data-tab="account"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>Account</button>
+  </nav>
+  <main>
+    <section id="tab-devices"><div class="grid" id="devices"></div></section>
+    <section id="tab-automations" class="hidden">
+      <div id="sun" class="notice hidden"></div>
+      <h2>Schedules</h2><div class="card list" id="schedules"></div>
+      <h2>Rules</h2><div class="card list" id="rules"></div>
+    </section>
+    <section id="tab-alerts" class="hidden">
+      <h2>Devices offline</h2><div class="card list" id="offline"></div>
+      <div id="notify-admin" class="hidden">
+        <h2>Notification channels</h2><div class="card list" id="channels"></div>
+        <h2>Recent notifications</h2><div class="card list" id="recent"></div>
+      </div>
+    </section>
+    <section id="tab-account" class="hidden">
+      <h2>Signed in</h2><div class="card" id="me"></div>
+      <div id="install-help" class="notice" style="margin-top:12px"></div>
+      <div id="tokens-section" class="hidden">
+        <h2>My API tokens</h2>
+        <div class="card">
+          <div class="meta">For scripts, other apps or a second phone. A token is shown only once.</div>
+          <form class="form" id="token-form"><input id="token-name" placeholder="Token name, e.g. phone" required maxlength="64"><button>Create</button></form>
+          <div id="new-token"></div>
+          <div class="list" id="tokens"></div>
+        </div>
+        <h2>Change password</h2>
+        <form class="card form" id="password-form">
+          <input id="pw-current" type="password" placeholder="Current password" autocomplete="current-password" required>
+          <input id="pw-new" type="password" placeholder="New password (8+ characters)" autocomplete="new-password" minlength="8" required>
+          <button>Change</button><span id="pw-result" class="result"></span>
+        </form>
+      </div>
+      <div id="users-section" class="hidden">
+        <h2>Users</h2>
+        <div class="card">
+          <form class="form" id="user-form">
+            <input id="new-username" placeholder="Username" required maxlength="64" autocomplete="off">
+            <input id="new-password" type="password" placeholder="Password (8+)" minlength="8" required autocomplete="new-password">
+            <select id="new-role"><option value="viewer">viewer</option><option value="operator" selected>operator</option><option value="admin">admin</option></select>
+            <button>Add user</button>
+          </form>
+          <div id="user-result" class="result"></div>
+          <div class="list" id="users"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script>
+(() => {
+  const PARAMS = {
+    set_brightness: [["brightness", "number", "0-100"]],
+    fade_to: [["brightness", "number", "0-100"], ["duration_ms", "number", "ms"]],
+    set_hex: [["hex_color", "color", ""]],
+    set_effect: [["effect", "select", "none,rainbow,pulse"]],
+    move_to: [["position", "number", "position"]],
+    set_speed: [["speed", "number", "speed"]],
+    set_temperature: [["temperature", "number", "°C"]],
+    set_mode: [["mode", "select", "off,heat,cool,auto,fan_only"]],
+    unlock: [["user_code", "password", "PIN"]],
+    calibrate: [["reference_value", "number", "reference"]],
+  };
+  const HIDDEN = new Set(["set_color", "set_hsv", "on", "off", "toggle", "lock"]);
+  const ROLES = ["viewer", "operator", "admin"];
+  const $ = (s) => document.querySelector(s);
+  const store = {
+    get(k) { try { return localStorage.getItem(k) || ""; } catch (e) { return ""; } },
+    set(k, v) { try { v ? localStorage.setItem(k, v) : localStorage.removeItem(k); } catch (e) {} },
+  };
+  let token = store.get("fuseiot_token");
+  let me = { role: "viewer", username: "" };
+  let status = {};
+  const cards = new Map();
+
+  function el(tag, attrs = {}, ...children) {
+    const n = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs)) {
+      if (v === undefined || v === null || v === false) continue;
+      if (k === "class") n.className = v;
+      else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
+      else n.setAttribute(k, v === true ? "" : v);
+    }
+    for (const c of children) if (c !== null && c !== undefined) n.append(c instanceof Node ? c : document.createTextNode(String(c)));
+    return n;
+  }
+  const can = (role) => ROLES.indexOf(me.role) >= ROLES.indexOf(role);
+
+  async function api(path, opts = {}) {
+    const headers = { "Content-Type": "application/json", ...(token ? { Authorization: "Bearer " + token } : {}) };
+    const res = await fetch(path, { ...opts, headers: { ...headers, ...(opts.headers || {}) } });
+    let body = null;
+    try { body = await res.json(); } catch (e) {}
+    if (res.status === 401 && !path.startsWith("/api/auth/login")) { showLogin("Your session has ended. Please sign in again."); throw new Error("unauthorized"); }
+    return { status: res.status, body };
+  }
+  const post = (path, data) => api(path, { method: "POST", body: JSON.stringify(data || {}) });
+
+  function fmt(v) {
+    if (v === null || v === undefined) return "—";
+    if (typeof v === "number") return Number.isInteger(v) ? String(v) : v.toFixed(2);
+    if (typeof v === "boolean") return v ? "yes" : "no";
+    if (typeof v === "object") return JSON.stringify(v);
+    return String(v);
+  }
+  function ago(ts) {
+    if (!ts) return "never";
+    const s = Math.max(0, Date.now() / 1000 - ts);
+    if (s < 60) return Math.round(s) + "s ago";
+    if (s < 3600) return Math.round(s / 60) + " min ago";
+    if (s < 86400) return Math.round(s / 3600) + " h ago";
+    return new Date(ts * 1000).toLocaleString();
+  }
+  function when(iso) { return iso ? new Date(iso).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit", day: "numeric", month: "short" }) : "—"; }
+
+  // ---------------------------------------------------------------- login
+  function showLogin(message) {
+    token = ""; store.set("fuseiot_token", "");
+    $("#app-view").classList.add("hidden");
+    $("#login-view").classList.remove("hidden");
+    $("#pw-fields").classList.toggle("hidden", !status.users_enabled);
+    $("#token-login").open = !status.users_enabled;
+    $("#login-error").textContent = message || "";
+  }
+  $("#login-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    $("#login-error").textContent = "";
+    const manual = $("#login-token").value.trim();
+    if (manual) { token = manual; store.set("fuseiot_token", token); return start(); }
+    const username = $("#login-user").value.trim(), password = $("#login-pass").value;
+    if (!username || !password) { $("#login-error").textContent = "Enter your username and password."; return; }
+    const { status: code, body } = await post("/api/auth/login", { username, password });
+    if (code !== 200) { $("#login-error").textContent = (body && body.error) || "Sign-in failed"; return; }
+    token = body.token; store.set("fuseiot_token", token); $("#login-pass").value = "";
+    start();
+  });
+  $("#logout-btn").addEventListener("click", async () => { try { await post("/api/auth/logout"); } catch (e) {} showLogin(); });
+
+  // ---------------------------------------------------------------- tabs
+  document.querySelectorAll("nav.tabs button").forEach((b) => b.addEventListener("click", () => {
+    document.querySelectorAll("nav.tabs button").forEach((x) => x.classList.toggle("on", x === b));
+    for (const t of ["devices", "automations", "alerts", "account"]) $("#tab-" + t).classList.toggle("hidden", t !== b.dataset.tab);
+    ({ automations: loadAutomations, alerts: loadAlerts, account: loadAccount, devices: loadDevices })[b.dataset.tab]();
+  }));
+
+  // ---------------------------------------------------------------- devices
+  function renderState(table, state) {
+    table.replaceChildren();
+    if (!state) { table.append(el("tr", {}, el("td", {}, "state"), el("td", {}, "unknown"))); return; }
+    const flat = {};
+    for (const [k, v] of Object.entries(state)) {
+      if (v && typeof v === "object" && !Array.isArray(v)) for (const [k2, v2] of Object.entries(v)) flat[k + "." + k2] = v2;
+      else flat[k] = v;
+    }
+    for (const [k, v] of Object.entries(flat)) table.append(el("tr", {}, el("td", {}, k), el("td", {}, fmt(v))));
+  }
+  function headline(dev, state) {
+    if (!state) return "";
+    if ("value" in state) return fmt(state.value) + (state.unit && state.unit !== "unknown" ? " " + state.unit : "");
+    if ("lock_state" in state) return state.lock_state;
+    if ("target_temperature" in state) return fmt(state.temperature) + "° → " + fmt(state.target_temperature) + "° · " + state.mode;
+    if ("position" in state) return "position " + fmt(state.position) + (state.moving ? " (moving)" : "");
+    if (state.switch) return state.switch.power ? "on" + (state.energy ? " · " + fmt(state.energy.power_watts) + " W" : "") : "off";
+    if ("brightness" in state && state.power) return "on · " + state.brightness + "%";
+    if ("power" in state) return state.power ? "on" : "off";
+    return "";
+  }
+  function powerOf(state) {
+    if (!state) return null;
+    if (state.switch) return !!state.switch.power;
+    if ("power" in state && typeof state.power === "boolean") return state.power;
+    if ("lock_state" in state) return state.lock_state === "locked";
+    return null;
+  }
+  async function runCommand(dev, cmd, params, resultEl) {
+    resultEl.className = "result"; resultEl.textContent = cmd.replace(/_/g, " ") + "…";
+    const { status: code, body } = await post(`/api/devices/${encodeURIComponent(dev.device_id)}/commands/${cmd}`, params);
+    const ok = code < 300 && body && body.success;
+    resultEl.className = "result " + (ok ? "ok" : "bad");
+    resultEl.textContent = ok ? `${cmd.replace(/_/g, " ")}: ${body.confirmed ? "confirmed" : "sent"} in ${Math.round(body.latency_ms)} ms`
+                              : `${cmd.replace(/_/g, " ")} failed: ${(body && (body.error || body.status)) || code}`;
+    if (ok) { const entry = cards.get(dev.device_id); if (entry) entry.update(body.state_after || entry.state); }
+    return ok;
+  }
+  function commandControl(dev, cmd, resultEl) {
+    const inputs = (PARAMS[cmd] || []).map(([name, type, hint]) => {
+      if (type === "select") {
+        const s = el("select", { "aria-label": name });
+        hint.split(",").forEach((o) => s.append(el("option", { value: o }, o)));
+        return [name, s, type];
+      }
+      return [name, el("input", { type, placeholder: hint, "aria-label": name, step: type === "number" ? "any" : null }), type];
+    });
+    const btn = el("button", { class: "ghost" }, cmd.replace(/_/g, " "));
+    btn.addEventListener("click", async () => {
+      const params = {};
+      for (const [name, input, type] of inputs) if (input.value !== "") params[name] = type === "number" ? Number(input.value) : input.value;
+      btn.disabled = true;
+      try { await runCommand(dev, cmd, params, resultEl); } finally { btn.disabled = false; }
+    });
+    return el("div", { class: "cmd" }, ...inputs.map((i) => i[1]), btn);
+  }
+  function renderDevice(dev) {
+    const table = el("table");
+    const resultEl = el("div", { class: "result" }, dev.state_error || "");
+    const statusPill = el("span", { class: "pill" });
+    const head = el("div", { class: "meta" });
+    const hasToggle = dev.commands.includes("toggle") || (dev.commands.includes("lock") && dev.commands.includes("unlock"));
+    const toggle = hasToggle ? el("button", { class: "power", "aria-label": "Turn " + dev.name + " on or off", disabled: !can("operator") }) : null;
+    const entry = {
+      state: dev.state,
+      update(state) {
+        entry.state = state; renderState(table, state); head.textContent = headline(dev, state) || dev.category;
+        const p = powerOf(state);
+        if (toggle) { toggle.classList.toggle("on", !!p); toggle.setAttribute("aria-pressed", p ? "true" : "false"); }
+      },
+      setStatus(st) {
+        const online = st ? st.online : dev.connected;
+        statusPill.className = "pill " + (online === false ? "bad" : online ? "ok" : "");
+        statusPill.textContent = online === false ? "offline" : online ? "online" : "unknown";
+        statusPill.title = st && st.last_seen ? "last seen " + ago(st.last_seen) : "";
+      },
+    };
+    if (toggle) toggle.addEventListener("click", async () => {
+      toggle.disabled = true;
+      let cmd = "toggle";
+      if (dev.commands.includes("lock") && !dev.commands.includes("toggle")) cmd = powerOf(entry.state) ? "unlock" : "lock";
+      try { await runCommand(dev, cmd, {}, resultEl); } finally { toggle.disabled = !can("operator"); }
+    });
+    const extra = dev.commands.filter((c) => !HIDDEN.has(c) && !(c === "unlock" && hasToggle));
+    const controls = can("operator") && (extra.length || dev.commands.includes("on"))
+      ? el("details", {}, el("summary", {}, "Controls & details"), el("div", { class: "cmds" },
+          ...["on", "off"].filter((c) => dev.commands.includes(c)).map((c) => commandControl(dev, c, resultEl)),
+          ...extra.map((c) => commandControl(dev, c, resultEl))), table)
+      : el("details", {}, el("summary", {}, "Details"), table);
+    const card = el("section", { class: "card" },
+      el("div", { class: "row" },
+        el("div", {}, el("div", { class: "name" }, dev.name), head),
+        el("div", { class: "row" }, statusPill, toggle)),
+      controls, resultEl);
+    entry.update(dev.state); entry.setStatus(dev.status);
+    cards.set(dev.device_id, entry);
+    return card;
+  }
+  async function loadDevices() {
+    const { body } = await api("/api/devices");
+    const box = $("#devices");
+    box.replaceChildren(); cards.clear();
+    if (!body.devices.length) box.append(el("div", { class: "empty" }, "No devices yet. Add them under 'devices:' in the config file."));
+    body.devices.forEach((d) => box.append(renderDevice(d)));
+    refreshSummary();
+  }
+  async function refreshSummary() {
+    try {
+      const { body } = await api("/health");
+      const off = body.offline_devices ? body.offline_devices.length : body.devices - body.devices_connected;
+      $("#summary").textContent = `${body.devices - off}/${body.devices} devices online · ${me.username || "guest"} (${me.role})`;
+    } catch (e) {}
+  }
+
+  // ------------------------------------------------------------ automations
+  async function loadAutomations() {
+    const [sched, rules] = await Promise.all([api("/api/schedules"), api("/api/rules")]);
+    const sbox = $("#schedules"); sbox.replaceChildren();
+    const sun = sched.body && sched.body.sun;
+    $("#sun").classList.toggle("hidden", !sun);
+    if (sun) $("#sun").textContent = `Today: sunrise ${sun.sunrise ? new Date(sun.sunrise).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}) : "—"}, sunset ${sun.sunset ? new Date(sun.sunset).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}) : "—"} (${sched.body.location.timezone})`;
+    const list = (sched.status === 200 && sched.body.schedules) || [];
+    if (!list.length) sbox.append(el("div", { class: "empty" }, "No schedules. Add them under 'schedules:' in the config file."));
+    for (const s of list) {
+      const toggle = el("button", { class: "toggle" + (s.enabled ? " on" : ""), "aria-label": "Enable " + s.name, disabled: !can("admin") });
+      toggle.addEventListener("click", async () => { await post(`/api/schedules/${encodeURIComponent(s.name)}/${s.enabled ? "disable" : "enable"}`); loadAutomations(); });
+      const run = can("operator") ? el("button", { class: "ghost" }, "Run now") : null;
+      const res = el("span", { class: "result" });
+      if (run) run.addEventListener("click", async () => {
+        run.disabled = true;
+        const { status: code, body } = await post(`/api/schedules/${encodeURIComponent(s.name)}/run`);
+        res.className = "result " + (code === 200 && body.ok ? "ok" : "bad"); res.textContent = code === 200 && body.ok ? "done" : "failed";
+        run.disabled = false;
+      });
+      sbox.append(el("div", { class: "item" },
+        el("div", {}, el("div", { class: "name" }, s.name.replace(/_/g, " ")),
+          el("div", { class: "meta" }, s.cron ? "cron " + s.cron : "at " + s.at + " · " + (s.days.length === 7 ? "daily" : s.days.join(", "))),
+          el("div", { class: "meta" }, s.enabled ? "next: " + when(s.next_run) : "disabled", s.last_run ? " · last: " + when(s.last_run) + (s.last_ok === false ? " (failed)" : "") : "", " ", res)),
+        el("div", { class: "row" }, run, toggle)));
+    }
+    const rbox = $("#rules"); rbox.replaceChildren();
+    const rl = (rules.status === 200 && rules.body.rules) || [];
+    if (!rl.length) rbox.append(el("div", { class: "empty" }, "No rules. Add them under 'rules:' in the config file."));
+    for (const r of rl) {
+      const toggle = el("button", { class: "toggle" + (r.enabled ? " on" : ""), "aria-label": "Enable " + r.name, disabled: !can("admin") });
+      toggle.addEventListener("click", async () => { await post(`/api/rules/${encodeURIComponent(r.name)}/${r.enabled ? "disable" : "enable"}`); loadAutomations(); });
+      const cond = r.conditions.map((c) => `${c.device}.${c.property} ${c.op} ${fmt(c.value)}`).join(" and ");
+      rbox.append(el("div", { class: "item" },
+        el("div", {}, el("div", { class: "name" }, r.name.replace(/_/g, " ")), el("div", { class: "meta" }, "when " + cond),
+          el("div", { class: "meta" }, `triggered ${r.trigger_count}× · last ${r.last_triggered ? ago(r.last_triggered) : "never"}`)),
+        toggle));
+    }
+  }
+
+  // ---------------------------------------------------------------- alerts
+  async function loadAlerts() {
+    const { body } = await api("/api/devices");
+    const off = body.devices.filter((d) => d.status && d.status.online === false);
+    const obox = $("#offline"); obox.replaceChildren();
+    if (!off.length) obox.append(el("div", { class: "empty" }, "All devices are responding."));
+    off.forEach((d) => obox.append(el("div", { class: "item" }, el("div", {}, el("div", { class: "name" }, d.name),
+      el("div", { class: "meta" }, "last seen " + ago(d.status.last_seen) + (d.status.last_error ? " · " + d.status.last_error : ""))))));
+    $("#notify-admin").classList.toggle("hidden", !can("admin"));
+    if (!can("admin")) return;
+    const n = await api("/api/notifications");
+    const cbox = $("#channels"), rbox = $("#recent"); cbox.replaceChildren(); rbox.replaceChildren();
+    if (n.status !== 200 || !Object.keys(n.body.channels).length) { cbox.append(el("div", { class: "empty" }, "No channels. Add 'notifications:' to the config (ntfy, telegram, webhook, email).")); return; }
+    for (const [name, kind] of Object.entries(n.body.channels)) {
+      const routed = Object.entries(n.body.alerts).filter(([, t]) => t.includes(name)).map(([e]) => e.replace(/_/g, " "));
+      const res = el("span", { class: "result" });
+      const btn = el("button", { class: "ghost" }, "Send test");
+      btn.addEventListener("click", async () => {
+        btn.disabled = true;
+        const r = await post("/api/notifications/test", { channel: name });
+        res.className = "result " + (r.status === 200 ? "ok" : "bad"); res.textContent = r.status === 200 ? "sent" : (r.body && r.body.error) || "failed";
+        btn.disabled = false; loadAlerts();
+      });
+      cbox.append(el("div", { class: "item" }, el("div", {}, el("div", { class: "name" }, name + " (" + kind + ")"),
+        el("div", { class: "meta" }, routed.length ? "alerts: " + routed.join(", ") : "used by rules/schedules only"), res), btn));
+    }
+    const recent = (n.body.recent || []).slice().reverse();
+    if (!recent.length) rbox.append(el("div", { class: "empty" }, "Nothing sent yet."));
+    recent.forEach((m) => rbox.append(el("div", { class: "item" }, el("div", {},
+      el("div", { class: "name" }, m.title || m.message), el("div", { class: "meta" }, `${m.channel} · ${ago(m.time)}${m.ok ? "" : " · FAILED: " + m.error}`)))));
+  }
+
+  // ---------------------------------------------------------------- account
+  async function loadAccount() {
+    $("#me").replaceChildren(el("div", { class: "name" }, me.username), el("div", { class: "meta" }, "role: " + me.role + (me.token_kind ? " · " + me.token_kind + " token" : "")));
+    $("#logout-btn").classList.toggle("hidden", !status.auth_required);
+    const isUser = status.users_enabled && (me.token_kind === "session" || me.token_kind === "api");
+    $("#tokens-section").classList.toggle("hidden", !isUser);
+    $("#users-section").classList.toggle("hidden", !(status.users_enabled && can("admin")));
+    if (isUser) {
+      const { body } = await api("/api/tokens");
+      const box = $("#tokens"); box.replaceChildren();
+      (body.tokens || []).forEach((t) => {
+        const del = el("button", { class: "ghost" }, "Revoke");
+        del.addEventListener("click", async () => { await api("/api/tokens/" + encodeURIComponent(t.id), { method: "DELETE" }); loadAccount(); });
+        box.append(el("div", { class: "item" }, el("div", {}, el("div", { class: "name" }, t.name), el("div", { class: "meta" }, "created " + ago(t.created_at) + " · used " + ago(t.last_used))), del));
+      });
+    }
+    if (status.users_enabled && can("admin")) {
+      const { body } = await api("/api/users");
+      const box = $("#users"); box.replaceChildren();
+      (body.users || []).forEach((u) => {
+        const role = el("select", { "aria-label": "Role of " + u.username });
+        ROLES.forEach((r) => role.append(el("option", { value: r, selected: r === u.role }, r)));
+        const res = el("span", { class: "result" });
+        role.addEventListener("change", async () => {
+          const r = await post("/api/users/" + encodeURIComponent(u.username), { role: role.value });
+          res.className = "result " + (r.status === 200 ? "ok" : "bad"); res.textContent = r.status === 200 ? "saved" : r.body.error;
+        });
+        const dis = el("button", { class: "ghost" }, u.disabled ? "Enable" : "Disable");
+        dis.addEventListener("click", async () => { const r = await post("/api/users/" + encodeURIComponent(u.username), { disabled: !u.disabled }); if (r.status !== 200) { res.className = "result bad"; res.textContent = r.body.error; } else loadAccount(); });
+        const del = el("button", { class: "danger" }, "Delete");
+        del.addEventListener("click", async () => {
+          if (!confirm("Delete user " + u.username + "?")) return;
+          const r = await api("/api/users/" + encodeURIComponent(u.username), { method: "DELETE" });
+          if (r.status !== 200) { res.className = "result bad"; res.textContent = r.body.error; } else loadAccount();
+        });
+        box.append(el("div", { class: "item" }, el("div", {}, el("div", { class: "name" }, u.username + (u.disabled ? " (disabled)" : "")), res), el("div", { class: "row" }, role, dis, del)));
+      });
+    }
+  }
+  $("#token-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const { status: code, body } = await post("/api/tokens", { name: $("#token-name").value.trim() });
+    const box = $("#new-token"); box.replaceChildren();
+    if (code === 200) box.append(el("div", { class: "notice" }, "Copy this token now, it won't be shown again:", el("code", { class: "secret" }, body.token)));
+    else box.append(el("div", { class: "error" }, body.error));
+    $("#token-name").value = ""; loadAccount();
+  });
+  $("#password-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const r = await post("/api/me/password", { current: $("#pw-current").value, new: $("#pw-new").value });
+    $("#pw-result").className = "result " + (r.status === 200 ? "ok" : "bad");
+    $("#pw-result").textContent = r.status === 200 ? "Password changed. Other sessions were signed out." : r.body.error;
+    $("#pw-current").value = ""; $("#pw-new").value = "";
+  });
+  $("#user-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const r = await post("/api/users", { username: $("#new-username").value.trim(), password: $("#new-password").value, role: $("#new-role").value });
+    $("#user-result").className = "result " + (r.status === 200 ? "ok" : "bad");
+    $("#user-result").textContent = r.status === 200 ? "User added." : r.body.error;
+    if (r.status === 200) { $("#new-username").value = ""; $("#new-password").value = ""; loadAccount(); }
+  });
+
+  // ---------------------------------------------------------------- live updates
+  let source = null;
+  function subscribe() {
+    if (source) source.close();
+    if (!window.EventSource) return;
+    source = new EventSource("/api/events" + (token ? "?token=" + encodeURIComponent(token) : ""));
+    source.addEventListener("state", (ev) => {
+      const event = JSON.parse(ev.data);
+      const direct = cards.get(event.device_id);
+      if (direct) { direct.update(event.new_state); return; }
+      const parent = cards.get(event.device_id.split(".")[0]);
+      if (parent) api(`/api/devices/${encodeURIComponent(event.device_id.split(".")[0])}`).then(({ body }) => parent.update(body.state)).catch(() => {});
+    });
+    source.addEventListener("status", (ev) => {
+      const s = JSON.parse(ev.data);
+      const entry = cards.get(s.device_id);
+      if (entry) entry.setStatus(s.status);
+      refreshSummary();
+    });
+  }
+
+  // ---------------------------------------------------------------- install (PWA)
+  let deferredPrompt = null;
+  window.addEventListener("beforeinstallprompt", (e) => { e.preventDefault(); deferredPrompt = e; $("#install-btn").classList.remove("hidden"); });
+  $("#install-btn").addEventListener("click", async () => {
+    if (!deferredPrompt) return;
+    deferredPrompt.prompt(); await deferredPrompt.userChoice; deferredPrompt = null; $("#install-btn").classList.add("hidden");
+  });
+  function installHelp() {
+    const standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone;
+    const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
+    $("#install-help").textContent = standalone ? "Running as an installed app."
+      : ios ? "Install on iPhone: tap Share, then 'Add to Home Screen'."
+      : !window.isSecureContext ? "To install as an app, open FuseIoT over HTTPS (see the deployment guide). You can still add a home-screen shortcut from the browser menu."
+      : "Install: use the 'Install app' button above or your browser menu ('Install app' / 'Add to Home screen').";
+  }
+  if ("serviceWorker" in navigator && window.isSecureContext) navigator.serviceWorker.register("/sw.js").catch(() => {});
+
+  // ---------------------------------------------------------------- start
+  async function start() {
+    try {
+      status = (await (await fetch("/api/auth/status")).json()) || {};
+    } catch (e) { $("#summary").textContent = "Server unreachable"; return; }
+    if (status.auth_required && !token) return showLogin();
+    try {
+      const r = await api("/api/auth/me");
+      if (r.status !== 200) return showLogin();
+      me = r.body;
+    } catch (e) { return; }
+    $("#login-view").classList.add("hidden");
+    $("#app-view").classList.remove("hidden");
+    installHelp();
+    await loadDevices();
+    subscribe();
+  }
+  start();
+  setInterval(refreshSummary, 15000);
+})();
+</script>
 </body>
 </html>

@@ -1,46 +1,34 @@
-from typing import Dict, Any
+"""
+Google Cloud IoT Core connector (retired).
 
+Google shut down Cloud IoT Core on 16 August 2023. This class remains so old
+imports keep working, but connecting raises :class:`CloudError`. Use
+:class:`~fuseiot.cloud.mqtt_bridge.MQTTBridge` with an MQTT broker (and e.g.
+Pub/Sub on the Google side) instead.
+"""
+from typing import Any, Callable, Dict
+
+from ..exceptions import CloudError
 from .base import CloudConnector
-from ..logging_config import get_logger
 
-logger = get_logger("cloud.gcp")
+RETIRED_MESSAGE = (
+    "Google Cloud IoT Core was retired on 2023-08-16 and can no longer be used. "
+    "Use fuseiot.cloud.MQTTBridge with your MQTT broker instead."
+)
 
 
 class GCPIoT(CloudConnector):
-    """Google Cloud IoT connector."""
-    
-    def __init__(
-        self,
-        hub: Any,
-        project_id: str,
-        cloud_region: str,
-        registry_id: str,
-        device_id: str,
-        private_key_file: str
-    ):
+    def __init__(self, hub: Any, *args: Any, **kwargs: Any):
         super().__init__(hub)
-        self.project_id = project_id
-        self.cloud_region = cloud_region
-        self.registry_id = registry_id
-        self.device_id = device_id
-        self.private_key_file = private_key_file
-    
+
     def connect(self) -> bool:
-        """Connect to GCP IoT."""
-        logger.info("gcp_iot_connect", project=self.project_id)
-        self._connected = True
-        return True
-    
+        raise CloudError(RETIRED_MESSAGE)
+
     def disconnect(self) -> None:
-        """Disconnect from GCP IoT."""
         self._connected = False
-        logger.info("gcp_iot_disconnect")
-    
+
     def publish_state(self, device_id: str, state: Dict[str, Any]) -> bool:
-        """Publish state to GCP IoT."""
-        logger.debug("gcp_iot_publish", device_id=device_id, state=state)
-        return True
-    
-    def subscribe_commands(self, callback: callable) -> None:
-        """Subscribe to GCP IoT commands."""
-        logger.info("gcp_iot_subscribe")
+        raise CloudError(RETIRED_MESSAGE)
+
+    def subscribe_commands(self, callback: Callable[[Dict[str, Any]], Any]) -> None:
+        raise CloudError(RETIRED_MESSAGE)

@@ -1,11 +1,9 @@
-from typing import Dict, Any, Optional
+"""Power and energy metering."""
 from dataclasses import dataclass
+from typing import Any, Dict, Optional
 
-from .base import Capability, CapabilityConfig
 from ..result import CommandResult
-from ..logging_config import get_logger
-
-logger = get_logger("capabilities.energy_monitor")
+from .base import Capability
 
 
 @dataclass
@@ -20,92 +18,75 @@ class EnergyReading:
 
 class EnergyMonitor(Capability):
     """
-    Power and energy monitoring.
-    
-    Commands: read, reset_counter, calibrate
-    State: power, voltage, current, energy, cost
+    Power / energy meter.
+
+    Device contract:
+        GET  /energy -> {"power": W, "voltage": V, "current": A, "energy": kWh,
+                         "frequency"?: Hz, "power_factor"?: float}
+        POST /reset  -> {"counter": "energy"}
     """
-    
-    def __init__(
-        self,
-        protocol,
-        cache,
-        config=None,
-        cost_per_kwh: float = 0.15,
-        currency: str = "USD",
-        event_bus=None,
-        **kwargs
-    ):
-        super().__init__(protocol, cache, config, event_bus=event_bus, **kwargs)
+
+    commands = ("reset_counter",)
+
+    def __init__(self, protocol: Any, cache: Any, config: Any = None,
+                 cost_per_kwh: float = 0.15, currency: str = "USD", **kwargs: Any):
+        super().__init__(protocol, cache, config, **kwargs)
         self.cost_per_kwh = cost_per_kwh
         self.currency = currency
-    
+        self.config.tolerance = max(self.config.tolerance, 1e-3)
+
     @property
     def category(self) -> str:
         return "energy_monitor"
-    
-    def read_state(self) -> Dict[str, Any]:
-        """Read energy data."""
-        cached = self.cache.get(self.id)
-        if cached is not None:
-            return cached
-        
-        try:
-            response = self.protocol.send({"_method": "GET", "_path": "/energy"})
-            state = {
-                "power_watts": response.get("power", 0.0),
-                "voltage": response.get("voltage", 0.0),
-                "current_amps": response.get("current", 0.0),
-                "energy_kwh": response.get("energy", 0.0),
-                "frequency_hz": response.get("frequency"),
-                "power_factor": response.get("power_factor"),
-                "cost_today": response.get("cost_today", 0.0)
-            }
-        except Exception as e:
-            logger.warning("read_state_failed", device=self.id, error=str(e))
-            state = {
-                "power_watts": 0.0,
-                "voltage": 0.0,
-                "current_amps": 0.0,
-                "energy_kwh": 0.0
-            }
-        
-        self.cache.set(self.id, state, source="poll")
-        return state
-    
+
+    def _fetch_state(self) -> Dict[str, Any]:
+        response = self.protocol.send({"_method": "GET", "_path": "/energy"})
+        if not isinstance(response, dict):
+            response = {}
+        energy = float(response.get("energy", 0.0))
+        return {
+            "power_watts": float(response.get("power", 0.0)),
+            "voltage": float(response.get("voltage", 0.0)),
+            "current_amps": float(response.get("current", 0.0)),
+            "energy_kwh": energy,
+            "frequency_hz": response.get("frequency"),
+            "power_factor": response.get("power_factor"),
+            "cost": round(energy * self.cost_per_kwh, 4),
+            "currency": self.currency,
+        }
+
     def read(self, fresh: bool = False) -> EnergyReading:
-        """Get energy reading."""
-        if fresh:
-            self.cache.invalidate(self.id)
-        
-        state = self.read_state()
+        state = self.read_state(fresh=fresh)
         return EnergyReading(
-            power_watts=state.get("power_watts", 0.0),
-            voltage=state.get("voltage", 0.0),
-            current_amps=state.get("current_amps", 0.0),
-            energy_kwh=state.get("energy_kwh", 0.0),
+            power_watts=state["power_watts"],
+            voltage=state["voltage"],
+            current_amps=state["current_amps"],
+            energy_kwh=state["energy_kwh"],
             frequency_hz=state.get("frequency_hz"),
-            power_factor=state.get("power_factor")
+            power_factor=state.get("power_factor"),
         )
-    
-    def reset_counter(self, confirm: Optional[bool] = None) -> CommandResult:
-        """Reset energy counter."""
+
+    def reset_counter(self, confirm: Optional[bool] = None, timeout: Optional[float] = None) -> CommandResult:
         return self._send_and_confirm(
-            command_payload={"_method": "POST", "_path": "/reset", "counter": "energy"},
-            expected_state={"energy_kwh": 0.0},
-            command_name="reset_counter"
+            {"_method": "POST", "_path": "/reset", "counter": "energy"},
+            {"energy_kwh": 0.0}, timeout, "reset_counter", confirm,
         )
-    
+
     @property
     def power(self) -> float:
-        """Current power in watts."""
-        return self.read_state().get("power_watts", 0.0)
-    
+        return float(self._state_value("power_watts", 0.0))
+
     @property
-    def today_cost(self) -> float:
-        """Estimated cost today."""
-        return self.read_state().get("cost_today", 0.0)
-    
+    def energy_kwh(self) -> float:
+        return float(self._state_value("energy_kwh", 0.0))
+
+    @property
+    def total_cost(self) -> float:
+        """Cost of the energy counted so far at ``cost_per_kwh``."""
+        return float(self._state_value("cost", 0.0))
+
+    # Backwards-compatible alias
+    today_cost = total_cost
+
     def calculate_cost(self, kwh: float) -> float:
-        """Calculate cost for given energy."""
         return kwh * self.cost_per_kwh

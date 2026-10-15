@@ -1,0 +1,51 @@
+# FuseIoT with an optional local MQTT broker.
+#
+#   docker compose run --rm fuseiot user add admin --role admin   # first time
+#   docker compose up -d                      # FuseIoT only (demo devices)
+#   docker compose --profile mqtt up -d       # + Mosquitto broker on :1883
+#
+# Put your own config in ./config/fuseiot.yaml (see examples/config.yaml).
+
+services:
+  fuseiot:
+    build: .
+    image: fuseiot:latest
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # Authentication: create user accounts (recommended for the phone app)
+      #   docker compose run --rm fuseiot user add admin --role admin
+      # and/or set a service token (admin rights, for scripts). The server refuses
+      # to start on the network with neither.
+      FUSEIOT_API_TOKEN: ${FUSEIOT_API_TOKEN:-}
+      FUSEIOT_LOG_LEVEL: ${FUSEIOT_LOG_LEVEL:-INFO}
+    volumes:
+      - ./config:/config:ro
+      - fuseiot-data:/data
+    # Serial devices: uncomment and adjust
+    # devices:
+    #   - /dev/ttyUSB0:/dev/ttyUSB0
+    # group_add:
+    #   - dialout
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  mosquitto:
+    image: eclipse-mosquitto:2.0.20
+    profiles: ["mqtt"]
+    restart: unless-stopped
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./deploy/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto-data:/mosquitto/data
+
+volumes:
+  fuseiot-data:
+  mosquitto-data:

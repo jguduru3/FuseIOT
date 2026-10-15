@@ -1,3 +1,3 @@
-﻿"""
+"""
 FuseIoT test suite.
 """

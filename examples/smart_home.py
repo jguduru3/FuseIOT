@@ -1,111 +1,82 @@
+"""
+Smart-home scenes, events and an automation rule (simulated devices).
 
+    python examples/smart_home.py
+"""
 import asyncio
-from fuseiot import (
-    Hub, HTTP, Switchable, Sensor, RGBLight, Thermostat,
-    auto_config, configure_logging, get_logger
-)
 
-logger = get_logger("smart_home")
+from fuseiot import (
+    Action,
+    Color,
+    Condition,
+    Dimmable,
+    Hub,
+    RGBLight,
+    RuleEngine,
+    Sensor,
+    Switchable,
+    Thermostat,
+    ThermostatMode,
+    VirtualDevice,
+)
 
 
 class SmartHome:
-    """Complete smart home controller."""
-    
-    def __init__(self):
-        self.hub = Hub(auto_config())
-        self._setup_devices()
-    
-    def _setup_devices(self):
-        """Initialize all devices."""
-        # Living room
-        self.living_light = self.hub.add_device(
-            HTTP("http://192.168.1.45"),
-            RGBLight,
-            device_id="living_room_light"
+    def __init__(self) -> None:
+        self.hub = Hub()
+        add = self.hub.add_device
+        # Replace VirtualDevice(...) with HTTP("http://<device-ip>/api") for real hardware.
+        self.living = add(VirtualDevice("rgb_light"), RGBLight, device_id="living_room_light")
+        self.bedroom = add(VirtualDevice("dimmable"), Dimmable, device_id="bedroom_light")
+        self.porch = add(VirtualDevice("switchable"), Switchable, device_id="porch_light")
+        self.thermostat = add(VirtualDevice("thermostat"), Thermostat, device_id="thermostat")
+        self.indoor = add(VirtualDevice("sensor", initial_state={"value": 21.0}), Sensor,
+                          device_id="indoor_temp", unit="celsius")
+
+        self.hub.on_state_change(
+            lambda e: print(f"  event {e.device_id}: {sorted(e.changed_keys)} -> {e.new_state}"),
+            pattern="*_light",
         )
-        
-        # Bedroom
-        self.bedroom_light = self.hub.add_device(
-            HTTP("http://192.168.1.46"),
-            Dimmable,
-            device_id="bedroom_light"
+
+    async def evening(self) -> None:
+        print("Evening scene")
+        results = await asyncio.gather(
+            self.living.on_async(color=Color(255, 147, 41), brightness=60),
+            self.bedroom.on_async(brightness=40),
+            self.porch.on_async(),
+            self.thermostat.set_temperature_async(22.0),
         )
-        
-        # Climate
-        self.thermostat = self.hub.add_device(
-            HTTP("http://192.168.1.47"),
-            Thermostat,
-            device_id="main_thermostat"
-        )
-        
-        # Sensors
-        self.temp_sensor = self.hub.add_device(
-            HTTP("http://192.168.1.48"),
-            Sensor,
-            unit="celsius",
-            device_id="indoor_temp"
-        )
-        
-        # Outdoor
-        self.outdoor_light = self.hub.add_device(
-            HTTP("http://192.168.1.49"),
-            Switchable,
-            device_id="outdoor_light"
-        )
-        
-        logger.info("smart_home_initialized", devices=len(self.hub))
-    
-    async def evening_mode(self):
-        """Activate evening scene."""
-        logger.info("activating_evening_mode")
-        
-        # Dim living room, warm color
-        await self.living_light.on_async(
-            color=Color(255, 147, 41),  # Warm white
-            brightness=60
-        )
-        
-        # Bedroom dimmed
-        await self.bedroom_light.on_async(brightness=40)
-        
-        # Outdoor on
-        await self.outdoor_light.on_async()
-        
-        # Temperature comfortable
-        await self.thermostat.set_temperature_async(22.0)
         await self.thermostat.set_mode_async(ThermostatMode.AUTO)
-    
-    async def sleep_mode(self):
-        """Activate sleep scene."""
-        logger.info("activating_sleep_mode")
-        
-        # All lights off
-        await self.hub.batch([
-            (self.living_light, "off", {}),
-            (self.bedroom_light, "off", {}),
-            (self.outdoor_light, "off", {}),
+        print(f"  {sum(r.confirmed for r in results)}/{len(results)} commands confirmed")
+
+    async def night(self) -> None:
+        print("Night scene")
+        batch = await self.hub.batch([
+            (self.living, "off", {}),
+            (self.bedroom, "off", {}),
+            (self.porch, "off", {}),
+            (self.thermostat, "set_temperature", {"temperature": 18.0}),
         ])
-        
-        # Night temperature
-        await self.thermostat.set_temperature_async(18.0)
-    
-    async def run(self):
-        """Main loop."""
-        await self.evening_mode()
-        
-        # Monitor for 1 hour
-        for _ in range(12):  # 5 min intervals
-            temp = self.temp_sensor.read(fresh=True)
-            logger.info("status", 
-                       temperature=temp["value"],
-                       thermostat=self.thermostat.temperature)
-            await asyncio.sleep(300)
-        
-        await self.sleep_mode()
+        print(f"  {batch}")
+
+    async def run(self) -> None:
+        rules = RuleEngine(self.hub)
+        rules.add_simple(
+            "cold_house",
+            Condition("indoor_temp", "value", "<", 19.0),
+            then_actions=[Action("thermostat", "set_mode", {"mode": "heat"})],
+        )
+        await self.evening()
+
+        print("Temperature drops to 17.5 C ...")
+        self.indoor.protocol.set_state({"value": 17.5})
+        self.indoor.read(fresh=True)
+        await rules.evaluate()
+        print(f"  thermostat mode is now {self.thermostat.read_state(fresh=True)['mode']!r}")
+
+        await self.night()
+        self.hub.close()
 
 
 if __name__ == "__main__":
-    configure_logging(level="INFO")
-    
-    home = SmartHome()
-    asyncio.run(home.run())
+    asyncio.run(SmartHome().run())

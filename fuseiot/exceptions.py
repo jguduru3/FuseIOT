@@ -1,4 +1,4 @@
-from typing import Optional, Dict, Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 if TYPE_CHECKING:
     from fuseiot.result import CommandResult
@@ -7,13 +7,13 @@ if TYPE_CHECKING:
 class FuseIoTError(Exception):
     """
     Base for all FuseIoT errors.
-    
+
     All exceptions carry:
     - message: Human-readable description
     - details: Structured context for programmatic handling
     - error_code: Machine-readable error identifier
     """
-    
+
     def __init__(
         self,
         message: str,
@@ -24,15 +24,15 @@ class FuseIoTError(Exception):
         self.message = message
         self.details = details or {}
         self.error_code = error_code or self.__class__.__name__
-    
+
     def __str__(self) -> str:
         if self.details:
             return f"[{self.error_code}] {self.message} (details: {self.details})"
         return f"[{self.error_code}] {self.message}"
-    
+
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}(message={self.message!r}, error_code={self.error_code!r})"
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Serialize for logging/API responses."""
         return {
@@ -52,7 +52,7 @@ class DeviceError(FuseIoTError):
 
 class ProtocolError(DeviceError):
     """Transport layer failure."""
-    
+
     def __init__(
         self,
         message: str,
@@ -83,7 +83,7 @@ class ConnectionError(DeviceError):
 
 class CommandError(DeviceError):
     """Command execution failed."""
-    
+
     def __init__(
         self,
         message: str,
@@ -97,7 +97,7 @@ class CommandError(DeviceError):
             details={
                 "device_id": device_id,
                 "command": command,
-                "result": result.to_dict() if result else None,
+                "result": result.to_dict() if result is not None else None,
                 **kwargs
             },
             error_code="COMMAND_FAILED"
@@ -131,7 +131,7 @@ class ConfigurationError(FuseIoTError):
 
 class ValidationError(ConfigurationError):
     """Parameter validation failed."""
-    
+
     def __init__(self, message: str, field: Optional[str] = None, **kwargs):
         super().__init__(
             message,
@@ -145,7 +145,7 @@ class ValidationError(ConfigurationError):
 
 class TimeoutError(FuseIoTError):
     """Operation exceeded time limit."""
-    
+
     def __init__(
         self,
         message: str,
@@ -180,7 +180,7 @@ class ResourceExhaustedError(FuseIoTError):
 
 class CircuitOpenError(FuseIoTError):
     """Circuit breaker is open - device temporarily disabled."""
-    
+
     def __init__(self, device_id: str, open_until: float, **kwargs):
         super().__init__(
             f"Circuit breaker open for {device_id}",
@@ -193,7 +193,7 @@ class CircuitOpenError(FuseIoTError):
 
 class RateLimitError(FuseIoTError):
     """Rate limit exceeded."""
-    
+
     def __init__(self, limit: int, window_seconds: float, retry_after: float, **kwargs):
         super().__init__(
             f"Rate limit exceeded: {limit} requests per {window_seconds}s",

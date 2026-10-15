@@ -1,17 +1,15 @@
-from fastapi import FastAPI, Request
-from fastapi.templating import Jinja2Templates
-from ..hub import Hub
+"""Web dashboard (served by :class:`fuseiot.server.FuseIoTServer`)."""
+from typing import Any
 
-app = FastAPI()
-templates = Jinja2Templates(directory="templates")
+from ..server.app import FuseIoTServer
 
-def run_dashboard(hub: Hub, host: str = "0.0.0.0", port: int = 8080):
-    """Run the web dashboard."""
-    @app.get("/")
-    async def root(request: Request):
-        devices = hub.list_devices()
-        return templates.TemplateResponse("index.html", {"request": request, "devices": devices})
 
-    # Add more routes as needed, e.g., /devices/{id}, /control
-    import uvicorn
-    uvicorn.run(app, host=host, port=port)
+def run_dashboard(hub: Any, host: str = "127.0.0.1", port: int = 8080, **kwargs: Any) -> None:
+    """Serve the dashboard and REST API for ``hub`` until interrupted."""
+    server = FuseIoTServer(hub, host=host, port=port, **kwargs)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.stop()

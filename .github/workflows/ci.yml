@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install "ruff>=0.5"
+      - run: ruff check fuseiot examples tests firmware
+
+  test:
+    needs: lint
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+        include:
+          - os: windows-latest
+            python-version: "3.12"
+          - os: macos-latest
+            python-version: "3.12"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - run: pip install -e ".[all,test]"
+      - run: pytest --cov=fuseiot --cov-report=term --cov-report=xml
+      - uses: actions/upload-artifact@v4
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        with:
+          name: coverage
+          path: coverage.xml
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install build twine
+      - run: python -m build
+      - run: twine check --strict dist/*
+      - name: Install wheel in a clean venv and smoke test
+        run: |
+          python -m venv /tmp/smoke
+          /tmp/smoke/bin/pip install dist/*.whl
+          /tmp/smoke/bin/fuseiot --version
+          /tmp/smoke/bin/fuseiot -c examples/demo.yaml validate
+          /tmp/smoke/bin/fuseiot -c examples/demo.yaml on living_room_light
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  docker:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t fuseiot:ci .
+      - name: Smoke test container
+        run: |
+          docker run -d --name fuseiot -p 8080:8080 -e FUSEIOT_API_TOKEN=ci-token fuseiot:ci
+          for i in $(seq 1 30); do curl -fs localhost:8080/ready && break; sleep 1; done
+          curl -fs localhost:8080/health
+          test "$(curl -s -o /dev/null -w '%{http_code}' localhost:8080/api/devices)" = "401"
+          curl -fs -H "Authorization: Bearer ci-token" -X POST \
+            localhost:8080/api/devices/living_room_light/commands/on | grep -q '"confirmed": true'
+          docker inspect --format '{{.State.Health.Status}}' fuseiot || true
+      - if: always()
+        run: docker logs fuseiot || true

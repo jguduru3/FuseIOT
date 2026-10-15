@@ -1,8 +1,8 @@
 import asyncio
-import time
 import functools
-from typing import TypeVar, Callable, Optional, Tuple, Type, Any
+import time
 from dataclasses import dataclass
+from typing import Any, Callable, Optional, Tuple, Type, TypeVar
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -44,7 +44,7 @@ def retry(config: Optional[RetryConfig] = None) -> Callable[[F], F]:
                         )
                         time.sleep(delay)
                     else:
-                        raise last_exception
+                        raise
             raise last_exception or RuntimeError("Retry failed")
 
         return wrapper  # type: ignore
@@ -82,7 +82,7 @@ def async_retry(config: Optional[AsyncRetryConfig] = None) -> Callable[[F], F]:
                         )
                         await asyncio.sleep(delay)
                     else:
-                        raise last_exception
+                        raise
             raise last_exception or RuntimeError("Async retry failed")
 
         return wrapper  # type: ignore

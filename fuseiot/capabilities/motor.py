@@ -1,151 +1,107 @@
-# fuseiot/capabilities/motor.py
-"""Position and speed control capability."""
+"""Position and speed control (steppers, servos, actuators, blinds)."""
+from typing import Any, Dict, Optional, Tuple
 
-from typing import Dict, Any, Optional
-from .base import Capability, CapabilityConfig
 from ..result import CommandResult
-from ..logging_config import get_logger
-
-logger = get_logger("capabilities.motor")
+from .base import Capability
 
 
 class Motor(Capability):
     """
-    Position and speed control.
-    
-    Commands: move_to, set_speed, stop, home
-    State: position, speed, moving, homed
+    Absolute positioning with speed control.
+
+    Device contract:
+        GET  /status -> {"position": float, "speed": float, "moving": bool, "homed": bool}
+        POST /move   -> {"position": float, "speed"?: float}
+        POST /speed  -> {"speed": float}
+        POST /stop
+        POST /home
     """
-    
+
+    commands = ("move_to", "set_speed", "stop", "home")
+
     def __init__(
         self,
-        protocol,
-        cache,
-        config=None,
-        position_range: tuple = (0, 360),
-        speed_range: tuple = (0, 100),
-        event_bus=None,  # ADD THIS PARAMETER
-        **kwargs
+        protocol: Any,
+        cache: Any,
+        config: Any = None,
+        position_range: Tuple[float, float] = (0, 360),
+        speed_range: Tuple[float, float] = (0, 100),
+        position_tolerance: float = 0.5,
+        **kwargs: Any,
     ):
-        super().__init__(protocol, cache, config, event_bus=event_bus, **kwargs)
+        super().__init__(protocol, cache, config, **kwargs)
         self.position_min, self.position_max = position_range
         self.speed_min, self.speed_max = speed_range
-    
+        # Physical positions rarely match exactly.
+        self.config.tolerance = max(self.config.tolerance, position_tolerance)
+
     @property
     def category(self) -> str:
         return "motor"
-    
-    def read_state(self) -> Dict[str, Any]:
-        """Read current position and status."""
-        cached = self.cache.get(self.id)
-        if cached is not None:
-            return cached
-        
-        try:
-            response = self.protocol.send({"_method": "GET", "_path": "/status"})
-            
-            state = {
-                "position": response.get("position", 0.0),
-                "speed": response.get("speed", 0.0),
-                "moving": response.get("moving", False),
-                "homed": response.get("homed", False)
-            }
-        except Exception as e:
-            logger.warning("read_state_failed", device=self.id, error=str(e))
-            state = {
-                "position": 0.0,
-                "speed": 0.0,
-                "moving": False,
-                "homed": False,
-                "error": str(e)
-            }
-        
-        self.cache.set(self.id, state, source="poll")
-        return state
-    
+
+    def _clamp_position(self, position: float) -> float:
+        return float(max(self.position_min, min(self.position_max, position)))
+
+    def _clamp_speed(self, speed: float) -> float:
+        return float(max(self.speed_min, min(self.speed_max, speed)))
+
+    def _fetch_state(self) -> Dict[str, Any]:
+        response = self.protocol.send({"_method": "GET", "_path": "/status"})
+        if not isinstance(response, dict):
+            response = {}
+        return {
+            "position": float(response.get("position", 0.0)),
+            "speed": float(response.get("speed", 0.0)),
+            "moving": bool(response.get("moving", False)),
+            "homed": bool(response.get("homed", False)),
+        }
+
     def move_to(
         self,
         position: float,
         speed: Optional[float] = None,
         confirm: Optional[bool] = None,
-        timeout: Optional[float] = None
+        timeout: Optional[float] = None,
     ) -> CommandResult:
-        """
-        Move to absolute position.
-        
-        Args:
-            position: Target position (clamped to range)
-            speed: Movement speed (optional)
-            confirm: Wait for position reached
-            timeout: Max seconds to wait
-        """
-        # Clamp to range
-        target = max(self.position_min, min(self.position_max, position))
-        
-        payload = {
-            "_method": "POST",
-            "_path": "/move",
-            "position": target
-        }
+        """Move to an absolute position (clamped to ``position_range``)."""
+        target = self._clamp_position(position)
+        payload: Dict[str, Any] = {"_method": "POST", "_path": "/move", "position": target}
         if speed is not None:
-            payload["speed"] = max(self.speed_min, min(self.speed_max, speed))
-        
+            payload["speed"] = self._clamp_speed(speed)
         return self._send_and_confirm(
-            command_payload=payload,
-            expected_state={"position": target, "moving": False},
-            timeout=timeout,
-            command_name="move_to"
+            payload, {"position": target, "moving": False}, timeout, "move_to", confirm
         )
-    
-    def set_speed(self, speed: float) -> CommandResult:
-        """Set movement speed."""
-        clamped = max(self.speed_min, min(self.speed_max, speed))
+
+    def set_speed(
+        self, speed: float, confirm: Optional[bool] = None, timeout: Optional[float] = None
+    ) -> CommandResult:
+        clamped = self._clamp_speed(speed)
         return self._send_and_confirm(
-            command_payload={
-                "_method": "POST",
-                "_path": "/speed",
-                "speed": clamped
-            },
-            expected_state={"speed": clamped},
-            command_name="set_speed"
+            {"_method": "POST", "_path": "/speed", "speed": clamped},
+            {"speed": clamped},
+            timeout, "set_speed", confirm,
         )
-    
-    def stop(self, confirm: Optional[bool] = None) -> CommandResult:
-        """Emergency stop."""
+
+    def stop(self, confirm: Optional[bool] = None, timeout: Optional[float] = None) -> CommandResult:
+        """Stop immediately. Sent without retries delay and with a short timeout."""
         return self._send_and_confirm(
-            command_payload={"_method": "POST", "_path": "/stop", "stop": True},
-            expected_state={"moving": False},
-            timeout=1.0,  # Short timeout for emergency
-            command_name="stop"
+            {"_method": "POST", "_path": "/stop", "stop": True},
+            {"moving": False},
+            timeout if timeout is not None else 1.0, "stop", confirm,
         )
-    
+
     def home(self, confirm: Optional[bool] = None, timeout: Optional[float] = None) -> CommandResult:
-        """Return to home position."""
+        """Return to the home position (allowed up to 30s by default)."""
         return self._send_and_confirm(
-            command_payload={"_method": "POST", "_path": "/home"},
-            expected_state={"position": 0.0, "homed": True},
-            timeout=timeout or 30.0,  # Homing can be slow
-            command_name="home"
+            {"_method": "POST", "_path": "/home"},
+            {"position": float(self.position_min), "homed": True},
+            timeout if timeout is not None else 30.0, "home", confirm,
         )
-    
+
     @property
     def position(self) -> float:
-        """Current position."""
-        return self.read_state().get("position", 0.0)
-    
+        return float(self._state_value("position", 0.0))
+
     @property
     def is_moving(self) -> bool:
-        """True if currently moving."""
-        return self.read_state().get("moving", False)
-    
-    async def move_to_async(self, position: float, **kwargs) -> CommandResult:
-        """Async move."""
-        return await self._send_and_confirm_async(
-            command_payload={
-                "_method": "POST",
-                "_path": "/move",
-                "position": max(self.position_min, min(self.position_max, position))
-            },
-            expected_state={"position": position, "moving": False},
-            command_name="move_to"
-        )
+        return bool(self._state_value("moving", False))

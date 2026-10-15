@@ -1,10 +1,11 @@
-from typing import Dict, Any, Optional, Tuple
-from .base import Capability, CapabilityConfig
-from ..result import CommandResult
-from ..types import Color, Brightness
-from ..logging_config import get_logger
+"""RGB / HSV colour lights with effects."""
+import colorsys
+from typing import Any, Dict, Optional
 
-logger = get_logger("capabilities.rgb_light")
+from ..result import CommandResult
+from ..types import Brightness, Color
+from .base import Capability
+from .switchable import _as_bool
 
 
 class ColorMode:
@@ -16,208 +17,159 @@ class ColorMode:
 
 class RGBLight(Capability):
     """
-    RGB color and brightness control.
-    
-    Supports RGB, HSV, color temperature, and effects.
+    Colour light.
+
+    Device contract:
+        GET  /state      -> {"power": bool, "brightness": 0-100, "r","g","b": 0-255,
+                             "color_mode"?: str, "effect"?: str}
+        POST /on         -> {"power": true, "r"?, "g"?, "b"?, "brightness"?}
+        POST /off
+        POST /color      -> {"r","g","b", "brightness"?}
+        POST /brightness -> {"brightness": int}
+        POST /effect     -> {"effect": str, "speed": int}
+
+    ``set_hsv`` is converted to RGB client-side so devices only need RGB.
     """
-    
-    def __init__(
-        self,
-        protocol,
-        cache,
-        config=None,
-        min_brightness: Brightness = 0,
-        max_brightness: Brightness = 100,
-        **kwargs
-    ):
+
+    commands = ("on", "off", "toggle", "set_color", "set_hex", "set_hsv",
+                "set_brightness", "set_effect")
+
+    def __init__(self, protocol: Any, cache: Any, config: Any = None,
+                 min_brightness: int = 0, max_brightness: int = 100, **kwargs: Any):
         super().__init__(protocol, cache, config, **kwargs)
         self.min_brightness = min_brightness
         self.max_brightness = max_brightness
-    
+
     @property
     def category(self) -> str:
         return "rgb_light"
-    
+
     def _clamp_brightness(self, value: Brightness) -> int:
-        """Clamp brightness to valid range."""
-        if isinstance(value, float):
-            value = int(value * 100)
-        return max(self.min_brightness, min(self.max_brightness, int(value)))
-    
-    def read_state(self) -> Dict[str, Any]:
-        """Read color and power state."""
-        cached = self.cache.get(self.id)
-        if cached is not None:
-            return cached
-        
-        try:
-            response = self.protocol.send({"_method": "GET", "_path": "/state"})
-            state = {
-                "power": response.get("power", False),
-                "brightness": response.get("brightness", 100),
-                "color": Color(
-                    response.get("r", 255),
-                    response.get("g", 255),
-                    response.get("b", 255)
-                ),
-                "color_mode": response.get("color_mode", ColorMode.RGB),
-                "effect": response.get("effect", "none")
-            }
-        except Exception as e:
-            logger.warning("read_state_failed", device=self.id, error=str(e))
-            state = {
-                "power": False,
-                "brightness": 100,
-                "color": Color(255, 255, 255),
-                "color_mode": ColorMode.RGB
-            }
-        
-        self.cache.set(self.id, state, source="poll")
-        return state
-    
+        if isinstance(value, float) and 0.0 <= value <= 1.0:
+            value = value * 100
+        return int(max(self.min_brightness, min(self.max_brightness, round(value))))
+
+    def _fetch_state(self) -> Dict[str, Any]:
+        response = self.protocol.send({"_method": "GET", "_path": "/state"})
+        if not isinstance(response, dict):
+            response = {}
+        r = int(response.get("r", 255))
+        g = int(response.get("g", 255))
+        b = int(response.get("b", 255))
+        return {
+            "power": _as_bool(response.get("power", False)),
+            "brightness": int(response.get("brightness", 100)),
+            "r": r,
+            "g": g,
+            "b": b,
+            "hex": Color(r, g, b).to_hex(),
+            "color_mode": response.get("color_mode", ColorMode.RGB),
+            "effect": response.get("effect", "none"),
+        }
+
     def set_color(
         self,
         color: Color,
         brightness: Optional[Brightness] = None,
         confirm: Optional[bool] = None,
-        timeout: Optional[float] = None
+        timeout: Optional[float] = None,
     ) -> CommandResult:
-        """Set RGB color."""
-        payload = {
-            "_method": "POST",
-            "_path": "/color",
-            "r": color.r,
-            "g": color.g,
-            "b": color.b,
-            "color_mode": ColorMode.RGB
+        """Set an RGB colour (``Color`` or ``(r, g, b)``), optionally with brightness."""
+        if not isinstance(color, Color):
+            color = Color(*color)
+        payload: Dict[str, Any] = {
+            "_method": "POST", "_path": "/color",
+            "r": color.r, "g": color.g, "b": color.b, "color_mode": ColorMode.RGB,
         }
-        expected = {
-            "r": color.r,
-            "g": color.g,
-            "b": color.b
-        }
-        
+        expected: Dict[str, Any] = {"r": color.r, "g": color.g, "b": color.b}
         if brightness is not None:
             clamped = self._clamp_brightness(brightness)
             payload["brightness"] = clamped
             expected["brightness"] = clamped
-        
-        return self._send_and_confirm(
-            command_payload=payload,
-            expected_state=expected,
-            timeout=timeout,
-            command_name="set_color"
-        )
-    
+        return self._send_and_confirm(payload, expected, timeout, "set_color", confirm)
+
+    def set_hex(self, hex_color: str, brightness: Optional[Brightness] = None,
+                confirm: Optional[bool] = None, timeout: Optional[float] = None) -> CommandResult:
+        """Set colour from ``#RRGGBB``."""
+        return self.set_color(Color.from_hex(hex_color), brightness, confirm, timeout)
+
     def set_hsv(
         self,
-        h: float,  # 0-360
-        s: float,  # 0-1
-        v: float,  # 0-1
+        h: float,
+        s: float,
+        v: float,
         confirm: Optional[bool] = None,
-        timeout: Optional[float] = None
+        timeout: Optional[float] = None,
     ) -> CommandResult:
-        """Set HSV color."""
-        return self._send_and_confirm(
-            command_payload={
-                "_method": "POST",
-                "_path": "/hsv",
-                "h": h,
-                "s": s,
-                "v": v,
-                "color_mode": ColorMode.HSV
-            },
-            expected_state={"h": h, "s": s, "v": v},
-            timeout=timeout,
-            command_name="set_hsv"
-        )
-    
-    def set_brightness(
-        self,
-        brightness: Brightness,
-        confirm: Optional[bool] = None,
-        timeout: Optional[float] = None
-    ) -> CommandResult:
-        """Set brightness only."""
+        """Set colour from hue (0-360), saturation (0-1) and value (0-1)."""
+        color = Color.from_hsv(h, s, v)
+        result = self.set_color(color, confirm=confirm, timeout=timeout)
+        result.command = "set_hsv"
+        return result
+
+    def set_brightness(self, brightness: Brightness, confirm: Optional[bool] = None,
+                       timeout: Optional[float] = None) -> CommandResult:
         clamped = self._clamp_brightness(brightness)
-        
         return self._send_and_confirm(
-            command_payload={
-                "_method": "POST",
-                "_path": "/brightness",
-                "brightness": clamped
-            },
-            expected_state={"brightness": clamped},
-            timeout=timeout,
-            command_name="set_brightness"
+            {"_method": "POST", "_path": "/brightness", "brightness": clamped},
+            {"brightness": clamped}, timeout, "set_brightness", confirm,
         )
-    
+
     def on(
         self,
         color: Optional[Color] = None,
         brightness: Optional[Brightness] = None,
         confirm: Optional[bool] = None,
-        timeout: Optional[float] = None
+        timeout: Optional[float] = None,
     ) -> CommandResult:
-        """Turn on with optional color/brightness."""
-        payload = {"_method": "POST", "_path": "/on", "power": True}
-        expected = {"power": True}
-        
-        if color:
-            payload.update({"r": color.r, "g": color.g, "b": color.b})
-            expected.update({"r": color.r, "g": color.g, "b": color.b})
-        
+        payload: Dict[str, Any] = {"_method": "POST", "_path": "/on", "power": True}
+        expected: Dict[str, Any] = {"power": True}
+        if color is not None:
+            if not isinstance(color, Color):
+                color = Color(*color)
+            rgb = {"r": color.r, "g": color.g, "b": color.b}
+            payload.update(rgb)
+            expected.update(rgb)
         if brightness is not None:
             clamped = self._clamp_brightness(brightness)
             payload["brightness"] = clamped
             expected["brightness"] = clamped
-        
-        return self._send_and_confirm(
-            command_payload=payload,
-            expected_state=expected,
-            timeout=timeout,
-            command_name="on"
-        )
-    
+        return self._send_and_confirm(payload, expected, timeout, "on", confirm)
+
     def off(self, confirm: Optional[bool] = None, timeout: Optional[float] = None) -> CommandResult:
-        """Turn off."""
         return self._send_and_confirm(
-            command_payload={"_method": "POST", "_path": "/off", "power": False},
-            expected_state={"power": False},
-            timeout=timeout,
-            command_name="off"
+            {"_method": "POST", "_path": "/off", "power": False},
+            {"power": False}, timeout, "off", confirm,
         )
-    
-    def set_effect(
-        self,
-        effect: str,  # "rainbow", "pulse", "breathe", etc.
-        speed: int = 50,
-        confirm: Optional[bool] = None
-    ) -> CommandResult:
-        """Set lighting effect."""
+
+    def toggle(self, confirm: Optional[bool] = None, timeout: Optional[float] = None) -> CommandResult:
+        if self.read_state(fresh=True).get("power"):
+            return self.off(confirm=confirm, timeout=timeout)
+        return self.on(confirm=confirm, timeout=timeout)
+
+    def set_effect(self, effect: str, speed: int = 50, confirm: Optional[bool] = None,
+                   timeout: Optional[float] = None) -> CommandResult:
+        """Start a named effect such as ``"rainbow"`` or ``"pulse"``."""
         return self._send_and_confirm(
-            command_payload={
-                "_method": "POST",
-                "_path": "/effect",
-                "effect": effect,
-                "speed": speed
-            },
-            expected_state={"effect": effect},
-            command_name="set_effect"
+            {"_method": "POST", "_path": "/effect", "effect": effect, "speed": int(speed)},
+            {"effect": effect}, timeout, "set_effect", confirm,
         )
-    
+
     @property
     def color(self) -> Color:
-        """Current color."""
         state = self.read_state()
-        return state.get("color", Color(255, 255, 255))
-    
+        return Color(state.get("r", 255), state.get("g", 255), state.get("b", 255))
+
+    @property
+    def hsv(self):
+        c = self.color
+        h, s, v = colorsys.rgb_to_hsv(c.r / 255, c.g / 255, c.b / 255)
+        return (h * 360.0, s, v)
+
     @property
     def brightness(self) -> int:
-        """Current brightness."""
-        return self.read_state().get("brightness", 100)
-    
+        return int(self._state_value("brightness", 100))
+
     @property
     def is_on(self) -> bool:
-        """Power state."""
-        return self.read_state().get("power", False)
+        return bool(self._state_value("power", False))

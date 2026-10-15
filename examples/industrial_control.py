@@ -1,108 +1,68 @@
-from fuseiot import (
-    Hub, MQTT, Motor, Sensor, EnergyMonitor,
-    CircuitBreaker, CapabilityConfig,
-    configure_logging, get_logger
-)
+"""
+Conveyor control with resilience: circuit breaker, rate limiting, emergency stop.
 
-logger = get_logger("industrial")
+    python examples/industrial_control.py
+"""
+import time
+
+from fuseiot import (
+    CapabilityConfig,
+    CircuitBreaker,
+    Hub,
+    Motor,
+    RateLimiter,
+    Sensor,
+    Switchable,
+    VirtualDevice,
+)
 
 
 class ConveyorSystem:
-    """Industrial conveyor belt control."""
-    
-    def __init__(self):
+    def __init__(self) -> None:
         self.hub = Hub()
-        
-        # Circuit breaker for safety
-        self.breaker = CircuitBreaker(
-            failure_threshold=3,
-            recovery_timeout=60.0
+        strict = CapabilityConfig(
+            timeout=3.0,
+            retry_attempts=2,
+            circuit_breaker=CircuitBreaker(failure_threshold=3, recovery_timeout=10),
+            rate_limiter=RateLimiter(requests=20, window=1.0),
         )
-        
-        self._setup_devices()
-    
-    def _setup_devices(self):
-        """Setup conveyor motors and sensors."""
-        # Main conveyor motor
-        self.conveyor_motor = self.hub.add_device(
-            MQTT("192.168.1.100", topic_prefix="conveyor/main"),
-            Motor,
-            position_range=(0, 10000),
-            device_id="main_conveyor",
-            config=CapabilityConfig(circuit_breaker=self.breaker)
-        )
-        
-        # Position sensor
-        self.position_sensor = self.hub.add_device(
-            MQTT("192.168.1.100", topic_prefix="sensors/position"),
-            Sensor,
-            device_id="position_sensor"
-        )
-        
-        # Energy monitor
-        self.energy = self.hub.add_device(
-            HTTP("http://192.168.1.101"),
-            EnergyMonitor,
-            cost_per_kwh=0.12,
-            device_id="conveyor_power"
-        )
-        
-        # Emergency stop button
-        self.e_stop = self.hub.add_device(
-            MQTT("192.168.1.100", topic_prefix="safety/e-stop"),
-            Switchable,
-            device_id="emergency_stop"
-        )
-    
-    def run_conveyor(self, speed: float, duration_seconds: float):
-        """Run conveyor at specified speed."""
-        # Check emergency stop
-        if self.e_stop.is_on:
-            logger.error("emergency_stop_active")
+        # Replace VirtualDevice(...) with Serial("/dev/ttyUSB0") / HTTP(...) on the line.
+        self.motor = self.hub.add_device(VirtualDevice("motor", latency_ms=20, settle_ms=200), Motor,
+                                         device_id="conveyor", config=strict,
+                                         position_range=(0, 1000), speed_range=(0, 100))
+        self.load = self.hub.add_device(VirtualDevice("sensor", initial_state={"value": 12.0}), Sensor,
+                                        device_id="belt_load", unit="kg")
+        self.e_stop = self.hub.add_device(VirtualDevice("switchable"), Switchable, device_id="e_stop_relay")
+
+    def move(self, position: float, speed: float) -> bool:
+        if self.load.read(fresh=True)["value"] > 50:
+            print("Load too high, refusing to move")
             return False
-        
-        # Set speed
-        result = self.conveyor_motor.set_speed(speed)
-        if not result.success:
-            logger.error("speed_set_failed", error=result.error)
-            return False
-        
-        # Monitor energy
-        start_energy = self.energy.energy_kwh
-        
-        # Run for duration
-        import time
-        start_time = time.time()
-        
-        while time.time() - start_time < duration_seconds:
-            # Check position
-            pos = self.position_sensor.value
-            
-            # Check energy consumption
-            current_energy = self.energy.energy_kwh
-            energy_used = current_energy - start_energy
-            
-            logger.info("conveyor_running",
-                       position=pos,
-                       speed=speed,
-                       energy_kwh=energy_used,
-                       cost=self.energy.calculate_cost(energy_used))
-            
-            time.sleep(1)
-        
-        # Stop
-        self.conveyor_motor.stop()
-        return True
-    
-    def emergency_stop(self):
-        """Trigger emergency stop."""
-        logger.critical("emergency_stop_triggered")
-        self.conveyor_motor.stop()
-        self.e_stop.on(confirm=False)
+        result = self.motor.move_to(position, speed=speed)
+        print(f"move_to({position}) -> {result.status.name} in {result.latency_ms:.0f} ms")
+        return result.confirmed
+
+    def emergency_stop(self) -> None:
+        stop = self.motor.stop(timeout=1.0)
+        relay = self.e_stop.on()
+        print(f"EMERGENCY STOP: motor {stop.status.name}, relay {relay.status.name}")
+
+    def run(self) -> None:
+        self.motor.home().raise_for_error()
+        for target in (250, 500, 750):
+            if not self.move(target, speed=60):
+                self.emergency_stop()
+                break
+            time.sleep(0.1)
+
+        print("Simulating a failing drive controller...")
+        self.motor.protocol.sim.failure_rate = 1.0
+        for _ in range(4):
+            r = self.motor.move_to(100)
+            print(f"  {r.status.name}: {r.error}")
+        print(f"breaker: {self.motor.config.circuit_breaker.get_stats()}")
+        self.hub.close()
 
 
 if __name__ == "__main__":
-    configure_logging(level="INFO")
-    
-    conveyor = ConveyorSystem()
-    conveyor.run_conveyor(speed=50.0, duration_seconds=60.0)
+    ConveyorSystem().run()

@@ -1,86 +1,97 @@
-import time
-from typing import Dict, Any, Callable, Optional, TYPE_CHECKING
+"""
+State confirmation: poll a device until its state matches an expectation.
 
-if TYPE_CHECKING:
-    from ..protocols.base import Protocol
+Simple, deterministic polling with a bounded number of attempts and a hard
+deadline. No guessing: a command is only confirmed if a fresh read of the
+device returns the expected values.
+"""
+import math
+import time
+from typing import Any, Callable, Dict, Optional, Tuple
+
+ConfirmOutcome = Tuple[bool, Optional[Dict[str, Any]], float]
+StateFetcher = Callable[[], Dict[str, Any]]
+StateMatcher = Callable[[Dict[str, Any], Dict[str, Any]], bool]
+
+
+def values_match(actual: Any, expected: Any, tolerance: float = 1e-6) -> bool:
+    """Compare two state values, allowing a tolerance for numbers."""
+    if isinstance(expected, bool) or isinstance(actual, bool):
+        return actual == expected
+    if isinstance(expected, (int, float)) and isinstance(actual, (int, float)):
+        return math.isclose(float(actual), float(expected), rel_tol=0.0, abs_tol=tolerance)
+    return actual == expected
+
+
+def state_matches(
+    actual: Dict[str, Any],
+    expected: Dict[str, Any],
+    tolerance: float = 1e-6,
+) -> bool:
+    """True if every expected key is present in ``actual`` with a matching value."""
+    if not isinstance(actual, dict):
+        return False
+    return all(
+        key in actual and values_match(actual[key], value, tolerance)
+        for key, value in expected.items()
+    )
 
 
 class ConfirmationEngine:
     """
-    Polls device until state matches expectation or timeout.
-    
-    Simple, deterministic, no ML.
+    Polls device state until it matches the expectation or the timeout expires.
+
+    The first poll happens immediately; subsequent polls wait ``poll_interval``.
     """
-    
-    def __init__(
-        self,
-        poll_interval: float = 0.1,
-        max_attempts: int = 20
-    ):
+
+    def __init__(self, poll_interval: float = 0.1, max_attempts: int = 50):
         self.poll_interval = poll_interval
         self.max_attempts = max_attempts
-    
+
     def confirm(
         self,
-        protocol: "Protocol",
+        fetch_state: StateFetcher,
         expected_state: Dict[str, Any],
         timeout: float = 2.0,
-        state_reader: Optional[Callable[[Any], Dict[str, Any]]] = None
-    ) -> tuple[bool, Optional[Dict[str, Any]], float]:
+        matcher: Optional[StateMatcher] = None,
+    ) -> ConfirmOutcome:
         """
-        Poll device until state matches or timeout.
-        
-        Args:
-            protocol: Transport to use for polling
-            expected_state: Key-value pairs that must match
-            timeout: Maximum seconds to wait
-            state_reader: Function to extract state from response
-            
+        Poll ``fetch_state`` until it matches ``expected_state``.
+
         Returns:
-            (confirmed, actual_state_or_none, elapsed_ms)
+            (confirmed, last_observed_state_or_None, elapsed_ms)
         """
+        match = matcher or state_matches
         start = time.monotonic()
-        deadline = start + timeout
+        deadline = start + max(0.0, timeout)
         attempts = 0
-        
-        while time.monotonic() < deadline and attempts < self.max_attempts:
+        last_state: Optional[Dict[str, Any]] = None
+
+        while attempts < self.max_attempts:
             attempts += 1
-            
             try:
-                # Poll current state
-                response = protocol.send({"read_state": True})
-                
-                # Extract state dict
-                if state_reader:
-                    actual = state_reader(response)
-                else:
-                    actual = response if isinstance(response, dict) else {}
-                
-                # Check match
-                if all(actual.get(k) == v for k, v in expected_state.items()):
-                    elapsed = (time.monotonic() - start) * 1000
-                    return True, actual, elapsed
-                
-                # Wait before retry
-                time.sleep(self.poll_interval)
-                
-            except Exception:
-                # Poll failed, retry
-                time.sleep(self.poll_interval)
-        
-        # Timeout
-        elapsed = (time.monotonic() - start) * 1000
-        return False, None, elapsed
+                last_state = fetch_state()
+                if match(last_state, expected_state):
+                    return True, last_state, (time.monotonic() - start) * 1000
+            except Exception:  # a failed poll is not fatal; retry until the deadline
+                last_state = None
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(self.poll_interval, remaining))
+
+        return False, last_state, (time.monotonic() - start) * 1000
 
 
-# Module-level convenience function
 _default_engine = ConfirmationEngine()
 
 
 def confirm_state(
-    protocol: "Protocol",
+    fetch_state: StateFetcher,
     expected: Dict[str, Any],
-    timeout: float = 2.0
-) -> tuple[bool, Optional[Dict[str, Any]], float]:
-    """Convenience: use default engine."""
-    return _default_engine.confirm(protocol, expected, timeout)
+    timeout: float = 2.0,
+    matcher: Optional[StateMatcher] = None,
+) -> ConfirmOutcome:
+    """Convenience wrapper around the default :class:`ConfirmationEngine`."""
+    return _default_engine.confirm(fetch_state, expected, timeout, matcher)

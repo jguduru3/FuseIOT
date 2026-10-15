@@ -1,10 +1,9 @@
 import asyncio
 import functools
-import threading
-from typing import TypeVar, Callable, Any, Optional, Coroutine, Union
 from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Callable, Coroutine, Optional, TypeVar
 
-from fuseiot.utils.retry import RetryConfig, retry as sync_retry
+from fuseiot.utils.retry import RetryConfig
 
 F = TypeVar("F", bound=Callable[..., Any])
 T = TypeVar("T")
@@ -27,21 +26,21 @@ def _get_executor() -> ThreadPoolExecutor:
 def run_sync(coro: Coroutine[Any, Any, T], timeout: Optional[float] = None) -> T:
     """
     Run coroutine from synchronous code.
-    
+
     Creates new event loop if none exists in current thread.
     Uses existing loop if already in async context (creates task).
-    
+
     Args:
         coro: Coroutine to execute
         timeout: Maximum seconds to wait
-        
+
     Returns:
         Coroutine result
-        
+
     Raises:
         TimeoutError: If timeout exceeded
         RuntimeError: If event loop handling fails
-        
+
     Example:
         >>> async def fetch():
         ...     return await aiohttp.get(url)
@@ -53,13 +52,13 @@ def run_sync(coro: Coroutine[Any, Any, T], timeout: Optional[float] = None) -> T
         # Already in async context—create task but don't await
         # Caller must await this, or we schedule it
         return loop.create_task(coro)  # type: ignore
-        
+
     except RuntimeError:
         # No loop running—create one
         try:
             return asyncio.run(asyncio.wait_for(coro, timeout=timeout))
-        except asyncio.TimeoutError:
-            raise TimeoutError(f"Coroutine timed out after {timeout}s")
+        except asyncio.TimeoutError as e:
+            raise TimeoutError(f"Coroutine timed out after {timeout}s") from e
 
 
 def run_async(
@@ -70,15 +69,15 @@ def run_async(
 ) -> Coroutine[Any, Any, T]:
     """
     Run synchronous function from async code.
-    
+
     Args:
         func: Blocking function to execute
         *args, **kwargs: Function arguments
         executor: Optional custom executor
-        
+
     Returns:
         Coroutine that resolves to function result
-        
+
     Example:
         >>> def blocking_read():
         ...     return serial.read()
@@ -86,7 +85,7 @@ def run_async(
     """
     loop = asyncio.get_event_loop()
     exec_pool = executor or _get_executor()
-    
+
     return loop.run_in_executor(
         exec_pool,
         functools.partial(func, *args, **kwargs)
@@ -96,34 +95,34 @@ def run_async(
 def async_retry(config: Optional[RetryConfig] = None) -> Callable[[F], F]:
     """
     Decorator: retry async function with exponential backoff.
-    
+
     Mirrors sync retry decorator behavior for async functions.
-    
+
     Args:
         config: Retry configuration
-        
+
     Returns:
         Decorated async function
-        
+
     Example:
         >>> @async_retry(RetryConfig(max_attempts=3))
         ... async def fetch_data():
         ...     return await aiohttp.get(url)
     """
     cfg = config or RetryConfig()
-    
+
     def decorator(func: F) -> F:
         @functools.wraps(func)
         async def wrapper(*args, **kwargs):
             last_exception = None
-            
+
             for attempt in range(cfg.max_attempts):
                 try:
                     return await func(*args, **kwargs)
-                    
+
                 except cfg.retryable_exceptions as e:
                     last_exception = e
-                    
+
                     if attempt < cfg.max_attempts - 1:
                         # Calculate backoff
                         delay = min(
@@ -133,46 +132,46 @@ def async_retry(config: Optional[RetryConfig] = None) -> Callable[[F], F]:
                         await asyncio.sleep(delay)
                     else:
                         # Final attempt failed
-                        raise last_exception
-            
+                        raise
+
             # Should never reach here
             raise last_exception or RuntimeError("Async retry failed")
-        
+
         return wrapper  # type: ignore
-    
+
     return decorator
 
 
 class AsyncLock:
     """
     Async-aware lock with timeout.
-    
+
     Wrapper around asyncio.Lock with convenience methods.
     """
-    
+
     def __init__(self):
         self._lock = asyncio.Lock()
-    
+
     async def acquire(self, timeout: Optional[float] = None) -> bool:
         """Acquire lock with optional timeout."""
         if timeout is None:
             await self._lock.acquire()
             return True
-        
+
         try:
             await asyncio.wait_for(self._lock.acquire(), timeout=timeout)
             return True
         except asyncio.TimeoutError:
             return False
-    
+
     def release(self) -> None:
         """Release lock."""
         self._lock.release()
-    
+
     async def __aenter__(self):
         await self._lock.acquire()
         return self
-    
+
     async def __aexit__(self, exc_type, exc, tb):
         self._lock.release()
 
@@ -183,25 +182,25 @@ def create_task_safely(
 ) -> asyncio.Task[T]:
     """
     Create asyncio task with exception handling.
-    
+
     Unlike raw create_task(), this ensures exceptions are logged
     and not silently swallowed.
-    
+
     Args:
         coro: Coroutine to taskify
         name: Optional task name (Python 3.8+)
-        
+
     Returns:
         Task handle
     """
     loop = asyncio.get_event_loop()
-    
+
     if name and hasattr(asyncio, 'create_task'):
         # Python 3.8+ supports name
         task = loop.create_task(coro, name=name)
     else:
         task = loop.create_task(coro)
-    
+
     # Add exception handler
     def on_task_done(t: asyncio.Task) -> None:
         try:
@@ -212,7 +211,7 @@ def create_task_safely(
             # Log but don't crash
             import logging
             logging.getLogger('fuseiot').exception(f"Task failed: {e}")
-    
+
     task.add_done_callback(on_task_done)
     return task
 

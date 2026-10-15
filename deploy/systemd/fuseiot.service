@@ -1,0 +1,46 @@
+# FuseIoT as a systemd service (Raspberry Pi / Linux gateway).
+#
+#   sudo useradd --system --home /var/lib/fuseiot --create-home --groups dialout fuseiot
+#   sudo python3 -m venv /opt/fuseiot && sudo /opt/fuseiot/bin/pip install "fuseiot[all]"
+#   sudo install -D -m 0640 -o root -g fuseiot fuseiot.yaml /etc/fuseiot/fuseiot.yaml
+#   echo "FUSEIOT_API_TOKEN=$(openssl rand -hex 32)" | sudo tee /etc/fuseiot/env >/dev/null
+#   sudo chmod 0640 /etc/fuseiot/env && sudo chgrp fuseiot /etc/fuseiot/env
+#   sudo cp fuseiot.service /etc/systemd/system/ && sudo systemctl enable --now fuseiot
+
+[Unit]
+Description=FuseIoT device control server
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=fuseiot
+Group=fuseiot
+WorkingDirectory=/var/lib/fuseiot
+EnvironmentFile=/etc/fuseiot/env
+Environment=FUSEIOT_CONFIG=/etc/fuseiot/fuseiot.yaml
+Environment=FUSEIOT_PERSISTENCE_ENABLED=true
+Environment=FUSEIOT_PERSISTENCE_PATH=/var/lib/fuseiot/fuseiot.db
+Environment=FUSEIOT_HISTORY_PATH=/var/lib/fuseiot/history.db
+Environment=FUSEIOT_USERS_DB=/var/lib/fuseiot/users.db
+Environment=FUSEIOT_LOG_JSON=true
+ExecStartPre=/opt/fuseiot/bin/fuseiot validate
+ExecStart=/opt/fuseiot/bin/fuseiot serve
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/fuseiot
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

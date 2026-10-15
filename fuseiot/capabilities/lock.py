@@ -1,11 +1,9 @@
-from typing import Dict, Any, Optional
+"""Smart lock control."""
 from enum import Enum
+from typing import Any, Dict, Optional
 
-from .base import Capability, CapabilityConfig
 from ..result import CommandResult
-from ..logging_config import get_logger
-
-logger = get_logger("capabilities.lock")
+from .base import Capability
 
 
 class LockState(Enum):
@@ -17,86 +15,66 @@ class LockState(Enum):
 
 class Lock(Capability):
     """
-    Smart lock control.
-    
-    Commands: lock, unlock
-    State: lock_state, battery_level, last_user
+    Lock / unlock with state verification.
+
+    Device contract:
+        GET  /status -> {"lock_state": "locked|unlocked|jammed",
+                         "battery_level"?: int, "door_open"?: bool}
+        POST /lock   -> {"action": "lock" | "unlock", "user_code"?: str}
     """
-    
-    def __init__(
-        self,
-        protocol,
-        cache,
-        config=None,
-        auto_lock_delay: Optional[int] = None,
-        event_bus=None,
-        **kwargs
-    ):
-        super().__init__(protocol, cache, config, event_bus=event_bus, **kwargs)
+
+    commands = ("lock", "unlock")
+
+    def __init__(self, protocol: Any, cache: Any, config: Any = None,
+                 auto_lock_delay: Optional[int] = None, **kwargs: Any):
+        super().__init__(protocol, cache, config, **kwargs)
         self.auto_lock_delay = auto_lock_delay
-    
+
     @property
     def category(self) -> str:
         return "lock"
-    
-    def read_state(self) -> Dict[str, Any]:
-        """Read lock state."""
-        cached = self.cache.get(self.id)
-        if cached is not None:
-            return cached
-        
-        try:
-            response = self.protocol.send({"_method": "GET", "_path": "/status"})
-            state = {
-                "lock_state": response.get("lock_state", "unknown"),
-                "battery_level": response.get("battery_level", 100),
-                "last_user": response.get("last_user"),
-                "door_open": response.get("door_open", False)
-            }
-        except Exception as e:
-            logger.warning("read_state_failed", device=self.id, error=str(e))
-            state = {
-                "lock_state": "unknown",
-                "battery_level": 0,
-                "door_open": False
-            }
-        
-        self.cache.set(self.id, state, source="poll")
-        return state
-    
+
+    def _fetch_state(self) -> Dict[str, Any]:
+        response = self.protocol.send({"_method": "GET", "_path": "/status"})
+        if not isinstance(response, dict):
+            response = {}
+        raw = str(response.get("lock_state", "unknown")).lower()
+        lock_state = raw if raw in {s.value for s in LockState} else LockState.UNKNOWN.value
+        return {
+            "lock_state": lock_state,
+            "battery_level": response.get("battery_level"),
+            "last_user": response.get("last_user"),
+            "door_open": bool(response.get("door_open", False)),
+        }
+
     def lock(self, confirm: Optional[bool] = None, timeout: Optional[float] = None) -> CommandResult:
-        """Lock the device."""
         return self._send_and_confirm(
-            command_payload={"_method": "POST", "_path": "/lock", "action": "lock"},
-            expected_state={"lock_state": "locked"},
-            timeout=timeout,
-            command_name="lock"
+            {"_method": "POST", "_path": "/lock", "action": "lock"},
+            {"lock_state": LockState.LOCKED.value},
+            timeout, "lock", confirm,
         )
-    
+
     def unlock(
         self,
         user_code: Optional[str] = None,
         confirm: Optional[bool] = None,
-        timeout: Optional[float] = None
+        timeout: Optional[float] = None,
     ) -> CommandResult:
-        """Unlock the device."""
-        payload = {"_method": "POST", "_path": "/lock", "action": "unlock"}
+        payload: Dict[str, Any] = {"_method": "POST", "_path": "/lock", "action": "unlock"}
         if user_code:
             payload["user_code"] = user_code
-        
         return self._send_and_confirm(
-            command_payload=payload,
-            expected_state={"lock_state": "unlocked"},
-            timeout=timeout,
-            command_name="unlock"
+            payload, {"lock_state": LockState.UNLOCKED.value}, timeout, "unlock", confirm
         )
-    
+
+    @property
+    def lock_state(self) -> LockState:
+        return LockState(self._state_value("lock_state", "unknown"))
+
     @property
     def is_locked(self) -> bool:
-        """Lock status."""
-        return self.read_state().get("lock_state") == "locked"
-    
+        return self._state_value("lock_state") == LockState.LOCKED.value
+
     @property
-    def battery_level(self) -> int:
-        """Battery percentage."""
-        return self.read_state().get("battery_level", 0)
+    def battery_level(self) -> Optional[int]:
+        return self._state_value("battery_level")

@@ -1,5 +1,4 @@
+"""Web dashboard assets; served by ``fuseiot serve``."""
+from fuseiot.dashboard.app import run_dashboard
 
-from .base import CloudConnector
-from .aws_iot import AWSIoT
-from .azure_iot import AzureIoT
-from .gcp_iot import GCPIoT
+__all__ = ["run_dashboard"]

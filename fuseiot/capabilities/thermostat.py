@@ -1,12 +1,10 @@
-from typing import Dict, Any, Optional
-from enum import Enum
+"""Heating / cooling control."""
 from dataclasses import dataclass
+from enum import Enum
+from typing import Any, Dict, Optional, Union
 
-from .base import Capability, CapabilityConfig
 from ..result import CommandResult
-from ..logging_config import get_logger
-
-logger = get_logger("capabilities.thermostat")
+from .base import Capability, CapabilityConfig
 
 
 class ThermostatMode(Enum):
@@ -26,135 +24,104 @@ class ThermostatConfig(CapabilityConfig):
 
 class Thermostat(Capability):
     """
-    Temperature control with heating/cooling.
-    
-    Commands: set_temperature, set_mode, fan_on, fan_off
-    State: temperature, target_temp, mode, fan_running
+    Target temperature, mode and fan control.
+
+    Device contract:
+        GET  /status -> {"temperature": float, "target_temperature": float,
+                         "mode": "off|heat|cool|auto|fan_only",
+                         "fan_running": bool, "heating"?: bool, "cooling"?: bool}
+        POST /target -> {"temperature": float}
+        POST /mode   -> {"mode": str}
+        POST /fan    -> {"on": bool}
     """
-    
+
+    commands = ("set_temperature", "set_mode", "fan_on", "fan_off")
+
     def __init__(
         self,
-        protocol,
-        cache,
-        config=None,
-        min_temp: float = 10.0,
-        max_temp: float = 30.0,
-        hysteresis: float = 0.5,
-        event_bus=None,
-        **kwargs
+        protocol: Any,
+        cache: Any,
+        config: Any = None,
+        min_temp: Optional[float] = None,
+        max_temp: Optional[float] = None,
+        hysteresis: Optional[float] = None,
+        **kwargs: Any,
     ):
-        super().__init__(protocol, cache, config, event_bus=event_bus, **kwargs)
-        self.min_temp = min_temp
-        self.max_temp = max_temp
-        self.hysteresis = hysteresis
-    
+        super().__init__(protocol, cache, config, **kwargs)
+        cfg = self.config
+        self.min_temp = min_temp if min_temp is not None else getattr(cfg, "min_temp", 10.0)
+        self.max_temp = max_temp if max_temp is not None else getattr(cfg, "max_temp", 30.0)
+        self.hysteresis = hysteresis if hysteresis is not None else getattr(cfg, "hysteresis", 0.5)
+        self.config.tolerance = max(self.config.tolerance, 0.05)
+
     @property
     def category(self) -> str:
         return "thermostat"
-    
-    def read_state(self) -> Dict[str, Any]:
-        """Read thermostat state."""
-        cached = self.cache.get(self.id)
-        if cached is not None:
-            return cached
-        
-        try:
-            response = self.protocol.send({"_method": "GET", "_path": "/status"})
-            state = {
-                "temperature": response.get("temperature", 20.0),
-                "target_temperature": response.get("target_temperature", 22.0),
-                "mode": response.get("mode", "off"),
-                "fan_running": response.get("fan_running", False),
-                "heating": response.get("heating", False),
-                "cooling": response.get("cooling", False)
-            }
-        except Exception as e:
-            logger.warning("read_state_failed", device=self.id, error=str(e))
-            state = {
-                "temperature": 20.0,
-                "target_temperature": 22.0,
-                "mode": "off",
-                "fan_running": False
-            }
-        
-        self.cache.set(self.id, state, source="poll")
-        return state
-    
+
+    def _fetch_state(self) -> Dict[str, Any]:
+        response = self.protocol.send({"_method": "GET", "_path": "/status"})
+        if not isinstance(response, dict):
+            response = {}
+        return {
+            "temperature": float(response.get("temperature", 0.0)),
+            "target_temperature": float(response.get("target_temperature", 0.0)),
+            "mode": str(response.get("mode", "off")),
+            "fan_running": bool(response.get("fan_running", False)),
+            "heating": bool(response.get("heating", False)),
+            "cooling": bool(response.get("cooling", False)),
+        }
+
     def set_temperature(
-        self,
-        temperature: float,
-        confirm: Optional[bool] = None,
-        timeout: Optional[float] = None
+        self, temperature: float, confirm: Optional[bool] = None, timeout: Optional[float] = None
     ) -> CommandResult:
-        """Set target temperature."""
-        clamped = max(self.min_temp, min(self.max_temp, temperature))
-        
+        clamped = float(max(self.min_temp, min(self.max_temp, temperature)))
         return self._send_and_confirm(
-            command_payload={
-                "_method": "POST",
-                "_path": "/target",
-                "temperature": clamped
-            },
-            expected_state={"target_temperature": clamped},
-            timeout=timeout,
-            command_name="set_temperature"
+            {"_method": "POST", "_path": "/target", "temperature": clamped},
+            {"target_temperature": clamped},
+            timeout, "set_temperature", confirm,
         )
-    
+
     def set_mode(
         self,
-        mode: ThermostatMode,
+        mode: Union[ThermostatMode, str],
         confirm: Optional[bool] = None,
-        timeout: Optional[float] = None
+        timeout: Optional[float] = None,
     ) -> CommandResult:
-        """Set operating mode."""
+        value = ThermostatMode(mode).value
         return self._send_and_confirm(
-            command_payload={
-                "_method": "POST",
-                "_path": "/mode",
-                "mode": mode.value
-            },
-            expected_state={"mode": mode.value},
-            timeout=timeout,
-            command_name="set_mode"
+            {"_method": "POST", "_path": "/mode", "mode": value},
+            {"mode": value},
+            timeout, "set_mode", confirm,
         )
-    
-    def fan_on(self, confirm: Optional[bool] = None) -> CommandResult:
-        """Turn fan on."""
+
+    def fan_on(self, confirm: Optional[bool] = None, timeout: Optional[float] = None) -> CommandResult:
         return self._send_and_confirm(
-            command_payload={"_method": "POST", "_path": "/fan", "on": True},
-            expected_state={"fan_running": True},
-            command_name="fan_on"
+            {"_method": "POST", "_path": "/fan", "on": True},
+            {"fan_running": True}, timeout, "fan_on", confirm,
         )
-    
-    def fan_off(self, confirm: Optional[bool] = None) -> CommandResult:
-        """Turn fan off."""
+
+    def fan_off(self, confirm: Optional[bool] = None, timeout: Optional[float] = None) -> CommandResult:
         return self._send_and_confirm(
-            command_payload={"_method": "POST", "_path": "/fan", "on": False},
-            expected_state={"fan_running": False},
-            command_name="fan_off"
+            {"_method": "POST", "_path": "/fan", "on": False},
+            {"fan_running": False}, timeout, "fan_off", confirm,
         )
-    
+
     @property
     def temperature(self) -> float:
-        """Current temperature."""
-        return self.read_state().get("temperature", 20.0)
-    
+        return float(self._state_value("temperature", 0.0))
+
     @property
     def target_temperature(self) -> float:
-        """Target temperature."""
-        return self.read_state().get("target_temperature", 22.0)
-    
+        return float(self._state_value("target_temperature", 0.0))
+
     @property
     def mode(self) -> str:
-        """Current mode."""
-        return self.read_state().get("mode", "off")
-    
+        return str(self._state_value("mode", "off"))
+
     @property
     def is_heating(self) -> bool:
-        """Is actively heating."""
-        return self.read_state().get("heating", False)
-    
+        return bool(self._state_value("heating", False))
+
     @property
     def is_cooling(self) -> bool:
-        """Is actively cooling."""
-        return self.read_state().get("cooling", False)
+        return bool(self._state_value("cooling", False))

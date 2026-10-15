@@ -1,8 +1,10 @@
-from typing import Optional
+"""MQTT over TLS."""
+import ssl
 from dataclasses import dataclass
+from typing import Any, Optional
 
-from .mqtt import MQTT, MQTTConfig
 from ..logging_config import get_logger
+from .mqtt import MQTT, MQTTConfig
 
 logger = get_logger("protocols.mqtts")
 
@@ -18,11 +20,14 @@ class MQTTSConfig(MQTTConfig):
 
 class MQTTS(MQTT):
     """
-    MQTT over TLS/SSL.
-    
-    Extends MQTT with TLS support.
+    MQTT over TLS (default port 8883).
+
+    Args:
+        ca_certs: CA bundle; system trust store is used when omitted.
+        certfile / keyfile: Client certificate for mutual TLS (e.g. AWS IoT).
+        tls_insecure: Skip hostname verification. Testing only.
     """
-    
+
     def __init__(
         self,
         broker: str,
@@ -30,33 +35,27 @@ class MQTTS(MQTT):
         ca_certs: Optional[str] = None,
         certfile: Optional[str] = None,
         keyfile: Optional[str] = None,
-        **kwargs
+        tls_insecure: bool = False,
+        **kwargs: Any,
     ):
         super().__init__(broker=broker, port=port, **kwargs)
         self.ca_certs = ca_certs
         self.certfile = certfile
         self.keyfile = keyfile
-    
+        self.tls_insecure = tls_insecure
+
     @property
-    def endpoint(self) -> str:
-        return f"mqtts://{self.broker}:{self.port}/{self.topic_prefix}"
-    
-    def connect(self) -> bool:
-        """Connect with TLS."""
-        try:
-            import ssl
-            
-            # Configure TLS
-            if self.ca_certs:
-                self._client.tls_set(
-                    ca_certs=self.ca_certs,
-                    certfile=self.certfile,
-                    keyfile=self.keyfile,
-                    tls_version=ssl.PROTOCOL_TLSv1_2
-                )
-            
-            return super().connect()
-            
-        except Exception as e:
-            logger.error("mqtts_tls_error", error=str(e))
-            raise
+    def scheme(self) -> str:
+        return "mqtts"
+
+    def _configure_client(self, client: Any) -> None:
+        client.tls_set(
+            ca_certs=self.ca_certs,
+            certfile=self.certfile,
+            keyfile=self.keyfile,
+            cert_reqs=ssl.CERT_REQUIRED,
+            tls_version=ssl.PROTOCOL_TLS_CLIENT,
+        )
+        if self.tls_insecure:
+            logger.warning("mqtts_tls_insecure", broker=self.broker)
+            client.tls_insecure_set(True)
